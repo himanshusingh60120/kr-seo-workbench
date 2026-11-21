@@ -6,7 +6,7 @@
 
   // Change this whenever the checks change. RD results saved in the browser by an older version of the checks
   // are thrown away, so an updated tool never replays old findings.
-  const CHECKS_VERSION = '2026-11-22-c';
+  const CHECKS_VERSION = '2026-11-22-d';
 
   function dropOldSavedResults() {
     if (KR.store.get('kr_checks_version', '') === CHECKS_VERSION) return;
