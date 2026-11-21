@@ -12,6 +12,14 @@ const ENGINE_LABEL = {
   both: 'both (OpenAI web search, with the lite result shown beside it)'
 };
 
+// The same list as api/keywords.js: the people who may approve keywords.
+function managers() {
+  const split = (t) => String(t || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+  const list = process.env.MANAGER_EMAILS ? split(process.env.MANAGER_EMAILS) : ['hummer@kingsresearch.com', 'hsingh@kingsresearch.com'];
+  split(process.env.MANAGER_EMAIL).forEach((e) => { if (list.indexOf(e) < 0) list.push(e); });
+  return list;
+}
+
 module.exports = handler({
   async status() {
     const id = sheets.sheetId();
@@ -29,12 +37,13 @@ module.exports = handler({
       serviceAccount: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL || '',
       sheetId: id,
       sheetUrl: 'https://docs.google.com/spreadsheets/d/' + id + '/edit',
-      managerEmail: process.env.MANAGER_EMAIL || 'hummer@kingsresearch.com',
-      // The Setup dialog prints this line as it is, so the cost-saving settings are shown here too.
+      managerEmail: managers().join(', '),
+      // The Setup dialog prints this line as it is, so the cost-saving and sign-in settings are shown here too.
       model: (process.env.OPENAI_MODEL || 'gpt-4.1-mini') +
         ' · Fact-check engine: ' + ENGINE_LABEL[eng] +
         ' · Jev key: ' + (jev.configured() ? 'set' : 'not set') +
-        ' · Web search key: ' + (web.configured() ? 'set' : 'not set'),
+        ' · Web search key: ' + (web.configured() ? 'set' : 'not set') +
+        ' · Sign-in accounts: ' + (process.env.USERS_SHEET_ID ? 'in a private sheet' : 'in this sheet (hidden, edit-locked)'),
       factEngine: eng,
       jev: jev.configured(),
       search: web.configured(),

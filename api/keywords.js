@@ -24,13 +24,19 @@ const STATUS = {
   REJECTED: 'Rejected'
 };
 
-function managerEmail() { return String(process.env.MANAGER_EMAIL || 'hummer@kingsresearch.com').trim().toLowerCase(); }
+function emailList(text) { return String(text || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean); }
+
+// The people who may approve or reject keywords (with the manager PIN). MANAGER_EMAILS replaces the list;
+// an older MANAGER_EMAIL setting is added to it.
+function managers() {
+  const list = process.env.MANAGER_EMAILS ? emailList(process.env.MANAGER_EMAILS) : ['hummer@kingsresearch.com', 'hsingh@kingsresearch.com'];
+  emailList(process.env.MANAGER_EMAIL).forEach((e) => { if (list.indexOf(e) < 0) list.push(e); });
+  return list;
+}
 function ourDomain() { return hostOf(process.env.SITE_BASE || 'https://www.kingsresearch.com') || 'kingsresearch.com'; }
 
 // The people who may add in-house keywords straight into the pipeline.
-function inhouseEditors() {
-  return String(process.env.INHOUSE_EDITORS || 'mmaniyar@kingsresearch.com,hummer@kingsresearch.com').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
-}
+function inhouseEditors() { return emailList(process.env.INHOUSE_EDITORS || 'mmaniyar@kingsresearch.com,hummer@kingsresearch.com'); }
 function isEditor(req) { return inhouseEditors().indexOf(String((req && req.user) || '').toLowerCase()) >= 0; }
 function requireEditor(req) {
   if (!isEditor(req)) throw new HttpError(403, 'Only ' + inhouseEditors().join(' and ') + ' can add in-house keywords.');
@@ -699,9 +705,12 @@ module.exports = handler({
     return { updated: updates.length };
   },
 
-  async decide(b) {
-    const mgr = managerEmail();
-    if (String(b.email || '').trim().toLowerCase() !== mgr) throw new HttpError(403, 'Only ' + mgr + ' can approve or reject keywords.');
+  // Approval or rejection. The approver is the person who is signed in (not the email typed on the screen):
+  // they must be one of the managers and must give the manager PIN.
+  async decide(b, req) {
+    const mgr = String((req && req.user) || '').trim().toLowerCase();
+    const allowed = managers();
+    if (allowed.indexOf(mgr) < 0) throw new HttpError(403, 'Only ' + allowed.join(' or ') + ' can approve or reject keywords. You are signed in as ' + (mgr || 'nobody') + '.');
     if (!process.env.MANAGER_PIN) throw new HttpError(500, 'MANAGER_PIN is not set in Vercel.');
     if (String(b.pin || '') !== String(process.env.MANAGER_PIN)) throw new HttpError(403, 'Incorrect manager PIN.');
     const rows = (await sheets.readTab('KEYWORDS')).filter((r) => r['Group ID'] === b.groupId);

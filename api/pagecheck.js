@@ -3,6 +3,8 @@
 // Publish Check (preview URL) and Live Check (live URL): extract the page, run each check, save to the sheet.
 // The browser calls "extract" once, then each "check" kind in parallel (each fits in one function call), then "save".
 // Report Snapshot and Table of Contents are checked only in Live Check (the browser skips them for preview pages).
+// Every AI finding is tested before it is shown: its quote must really be on the page, its fix must change
+// something, and it must state a definite problem (see grounded() and real() below).
 
 const { handler, HttpError, nowIST, hostOf, isCompetitor } = require('../lib/http');
 const page = require('../lib/page');
@@ -23,21 +25,69 @@ function issue(severity, section, problem, fix, quote) {
 
 function lowerNorm(s) { return checks.norm(s).toLowerCase().replace(/\s+/g, ' ').trim(); }
 
+// ---------- tests every AI finding must pass ----------
+// Text reduced to lower-case letters, digits, % and dots, so quotes can be compared whatever the spacing or quote marks.
+function plain(s) { return checks.norm(s).toLowerCase().replace(/[^a-z0-9%.]+/g, ' ').replace(/\s+/g, ' ').trim(); }
+
+// The quoted text must really be in the source. The AI sometimes "quotes" words that are not on the page
+// (an invented typo, a reworded sentence); such findings are dropped. Very short quotes cannot be judged and stay.
+function inSource(quote, src) {
+  const pieces = String(quote || '').split(/\.{3,}|\u2026/).map((p) => plain(p).replace(/^[.\s]+|[.\s]+$/g, '')).filter((p) => p.length >= 8);
+  if (!pieces.length) return true;
+  return pieces.every((p) => src.indexOf(p.slice(0, 120)) >= 0);
+}
+
+function grounded(list, sourceText) {
+  const src = plain(sourceText);
+  return (list || []).filter((x) => inSource(x.quote, src));
+}
+
+const SOFT_FIX_RE = /^(?:please\s+)?(?:double-?check|verify|confirm|ensure|review|recheck)\b/i;
+const HARD_RE = /\b(?:mismatch\w*|differ\w*|contradict\w*|conflict\w*|incorrect|wrong|instead of|typo\w*|misspel\w*|duplicat\w*|does not match|doesn't match|missing|extra)\b/i;
+const NOT_ELSEWHERE_RE = /\bnot (?:supported|mentioned|given|stated|provided)\b[^.]{0,60}\b(?:elsewhere|anywhere else|in the (?:description|main text|report))\b/i;
+
+// A real finding changes the text, states a definite problem, and is not just "this figure appears only once".
+function real(list) {
+  return (list || []).filter((x) => {
+    if (x.quote && x.fix && plain(x.quote) === plain(x.fix)) return false;
+    if (NOT_ELSEWHERE_RE.test(x.problem)) return false;
+    if (SOFT_FIX_RE.test(x.fix || '') && !HARD_RE.test(x.problem)) return false;
+    return true;
+  });
+}
+
+// The key companies list ends where the developments heading starts.
+function companyNames(pg) {
+  return checks.keyCompanies(pg.descriptionText).filter((c) => !/\bdevelopments?\s*:?$/i.test(c));
+}
+
+// The infographic check needs the page's figures, which sit all through the description (regional values come
+// near the end). This keeps the opening text and every later sentence that holds a figure.
+function figuresDigest(text) {
+  const t = String(text || '');
+  if (t.length <= 8500) return t;
+  const rest = t.slice(3000).split(/(?<=[.!?])\s+|\n+/).filter((s) => /\d/.test(s) && /(USD|\$|%|million|billion|CAGR)/i.test(s));
+  return (t.slice(0, 3000) + '\n...\nOther sentences with figures:\n' + rest.join('\n')).slice(0, 8800);
+}
+
 // Infographic: masked values (XX.X%) are intentional and numbers the content does not mention are fine.
-const IMAGE_SKIP_RE = /\b(?:font|bold|styl\w*|layout|clarity|clarif\w*|label\w*|unspecified|does not specify|not specified|placeholder\w*|masked)\b|\bnot (?:given|mentioned|stated|specified|included|present|provided|confirmed|verifiable) in the description\b|\bnot in the description\b|\bcannot be verified\b|\bnot verifiable\b|\b[x]{1,3}(?:[.,][x]{1,3})?\s?%|\$\s?x{1,3}/i;
+const IMAGE_SKIP_RE = /\b(?:font|bold|styl\w*|layout|clarity|clarif\w*|label\w*|unspecified|does not specify|not specified|placeholder\w*|masked|uncorroborated|unsupported)\b|\bnot (?:given|mentioned|stated|specified|included|present|provided|confirmed|verifiable) in the description\b|\bnot in the description\b|\bdoes not (?:provide|give|mention|state|include)\b|\bnot (?:mentioned|supported|given|stated)\b[^.]{0,40}\bdescription\b|\bcannot be verified\b|\bnot verifiable\b|\bshould be verified\b|\bseems unusually\b|\bno contradictory\b|\bmay create confusion\b|\b[x]{1,3}(?:[.,][x]{1,3})?\s?%|\$\s?x{1,3}/i;
 const TOC_SKIP_RE = /compan(?:y|ies)|key players?|table of contents?["'\s]*(?:heading|label|title)|["']table of content["']/i;
+// Labels of the website's own tabs are not part of the report text.
+const NAV_LABEL_RE = /^(?:table of contents?|report snapshot|description)$/;
 
 const KINDS = {
   async data(pg) {
     const det = checks.figuresCheck(pg.descriptionText);
     const lintData = checks.lint(pg.descriptionText).filter((i) => i.category === 'data');
     const out = await ai.chatJSON({ system: P.qcSystem(), user: P.dataTask(pg, det.figures) });
-    return checks.result(det.issues.concat(lintData, checks.normIssues(out.issues, 'Description')), { figures: det.figures });
+    const found = grounded(real(checks.normIssues(out.issues, 'Description')), pg.descriptionText + '\n' + checks.faqText(pg.faqs));
+    return checks.result(det.issues.concat(lintData, found), { figures: det.figures });
   },
 
   async faq(pg) {
     const issues = [];
-    const companies = checks.keyCompanies(pg.descriptionText);
+    const companies = companyNames(pg);
     const faqs = pg.faqs || [];
     if (!faqs.length) {
       issues.push(issue('warning', 'FAQs', 'No FAQs were found on the page.', 'Add the standard FAQs (growth, drivers, key players, challenges, fastest-growing region, opportunities).'));
@@ -52,7 +102,7 @@ const KINDS = {
     const out = await ai.chatJSON({ system: P.qcSystem(), user: P.faqTask(pg, companies) });
     const desc = lowerNorm(pg.descriptionText);
     // An FAQ answer that repeats the description word for word cannot contradict it.
-    const ai2 = checks.normIssues(out.issues, 'FAQs').filter((x) => {
+    const ai2 = grounded(real(checks.normIssues(out.issues, 'FAQs')), checks.faqText(faqs) + '\n' + pg.descriptionText).filter((x) => {
       const q = lowerNorm(x.quote);
       return !(q.length > 40 && desc.indexOf(q.slice(0, 220)) >= 0 && /conflict|mismatch|differ|instead|incorrect|inconsistent|contradict|mix/i.test(x.problem));
     });
@@ -63,7 +113,8 @@ const KINDS = {
     const text = pg.descriptionText + '\n\nFAQS:\n' + checks.faqText(pg.faqs);
     const lint = checks.lint(text).filter((i) => i.category !== 'data');
     const out = await ai.chatJSON({ system: P.qcSystem(), user: P.languageTask(text) });
-    return checks.result(lint.concat(checks.normIssues(out.issues, 'Description')));
+    const found = grounded(real(checks.normIssues(out.issues, 'Description')), text).filter((x) => !NAV_LABEL_RE.test(plain(x.quote)));
+    return checks.result(lint.concat(found));
   },
 
   async image(pg) {
@@ -78,13 +129,14 @@ const KINDS = {
       return checks.result(issues, { images: [] });
     }
     const figures = checks.marketFigures(pg.descriptionText);
+    const forImage = Object.assign({}, pg, { descriptionText: figuresDigest(pg.descriptionText) });
     const transcripts = [];
     for (const img of content.slice(0, 2)) {
       if (img.alt && h1 && img.alt.toLowerCase().indexOf(h1.toLowerCase()) < 0) issues.push(issue('warning', 'Image alt text', 'Alt text "' + img.alt + '" does not contain the market name "' + h1 + '".', 'Use "' + h1 + ' Size & Share, By Revenue, ' + (figures.period ? figures.period.join('-') : '<forecast period>') + '".', img.alt));
       try {
-        const out = await ai.chatJSON({ system: P.qcSystem(), user: P.imageTask(pg, figures, img.alt), images: [img.src] });
+        const out = await ai.chatJSON({ system: P.qcSystem(), user: P.imageTask(forImage, figures, img.alt), images: [img.src] });
         transcripts.push({ src: img.src, alt: img.alt, text: String(out.transcription || '') });
-        checks.normIssues(out.issues, 'Infographic')
+        real(checks.normIssues(out.issues, 'Infographic'))
           .filter((x) => !IMAGE_SKIP_RE.test(x.problem + ' ' + x.quote + ' ' + x.fix))
           .forEach((x) => issues.push(Object.assign({}, x, { severity: x.severity === 'warning' ? 'check' : x.severity })));
       } catch (e) {
@@ -166,7 +218,8 @@ const KINDS = {
     if (!s.text) return checks.result([issue('check', 'Report Snapshot', 'The Report Snapshot tab could not be read' + (s.error ? ' (' + s.error + ')' : '') + '.', 'Open the Snapshot tab and confirm it loads.')], { url: s.url || '' });
     const figures = checks.marketFigures(pg.descriptionText);
     const out = await ai.chatJSON({ system: P.qcSystem(), user: P.snapshotTask(pg, figures) });
-    return checks.result(checks.normIssues(out.issues, 'Report Snapshot'), { url: s.url });
+    // A snapshot finding must quote the snapshot itself.
+    return checks.result(grounded(real(checks.normIssues(out.issues, 'Report Snapshot')), s.text), { url: s.url });
   },
 
   async toc(pg) {
@@ -174,7 +227,8 @@ const KINDS = {
     if (!t.text) return checks.result([issue('check', 'Table of Contents', 'The Table of Contents tab could not be read' + (t.error ? ' (' + t.error + ')' : '') + '.', 'Open the TOC tab and confirm it loads.')], { url: t.url || '' });
     const figures = checks.marketFigures(pg.descriptionText);
     const out = await ai.chatJSON({ system: P.qcSystem(), user: P.tocTask(pg, figures) });
-    const list = checks.normIssues(out.issues, 'Table of Contents').filter((x) => !TOC_SKIP_RE.test(x.problem + ' ' + x.quote));
+    // A TOC finding must quote the TOC itself; findings that quote the description belong to the other checks.
+    const list = grounded(real(checks.normIssues(out.issues, 'Table of Contents')), t.text).filter((x) => !TOC_SKIP_RE.test(x.problem + ' ' + x.quote));
     return checks.result(list, { url: t.url });
   }
 };
@@ -208,7 +262,7 @@ module.exports = handler({
     return KINDS[kind](requirePage(b.page));
   },
 
-  async save(b) {
+  async save(b, req) {
     const mode = b.mode === 'live' ? 'live' : 'publish';
     const results = b.results || {};
     let total = 0;
@@ -218,7 +272,7 @@ module.exports = handler({
       'Checked At': nowIST(),
       'URL': String(b.url || ''),
       'Report Name': String(b.reportName || ''),
-      'Checked By': String(b.user || '')
+      'Checked By': String((req && req.user) || b.user || '')
     };
     Object.keys(COLUMNS).forEach((k) => {
       const r = results[k];

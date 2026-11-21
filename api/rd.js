@@ -60,12 +60,14 @@ module.exports = handler({
     } catch (e) {
       aiError = e.message;
     }
-    const sorted = splitConsistency(checks.normIssues(out.consistency, 'Consistency'));
+    // AI findings are kept only when the text they quote is really in the content.
+    const sorted = splitConsistency(checks.grounded(checks.normIssues(out.consistency, 'Consistency'), content));
+    const aiLanguage = checks.grounded(checks.normIssues(out.language, 'Language'), content);
     return {
       coverage,
       figures: fig.figures,
       consistency: checks.strip(checks.dedupe(fig.issues.concat(lint.filter((i) => i.category === 'data'), sorted.data))),
-      language: checks.strip(checks.dedupe(lint.filter((i) => i.category !== 'data').concat(checks.normIssues(out.language, 'Language'), sorted.language))),
+      language: checks.strip(checks.dedupe(lint.filter((i) => i.category !== 'data').concat(aiLanguage, sorted.language))),
       structure: checks.normIssues(out.structure, 'Structure'),
       keywordTips: (Array.isArray(out.keyword_tips) ? out.keyword_tips : []).filter((x) => x && x.keyword).map((x) => ({ keyword: String(x.keyword), suggestion: String(x.suggestion || '') })),
       aiError
