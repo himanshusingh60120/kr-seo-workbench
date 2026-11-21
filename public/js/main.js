@@ -4,6 +4,16 @@
 (function () {
   const KR = window.KR;
 
+  // Change this whenever the checks change. RD results saved in the browser by an older version of the checks
+  // are thrown away, so an updated tool never replays old findings.
+  const CHECKS_VERSION = '2026-11-22-c';
+
+  function dropOldSavedResults() {
+    if (KR.store.get('kr_checks_version', '') === CHECKS_VERSION) return;
+    KR.store.set('kr_rd_last', '');
+    KR.store.set('kr_checks_version', CHECKS_VERSION);
+  }
+
   function loadScript(src) {
     return new Promise((resolve, reject) => {
       const s = document.createElement('script');
@@ -16,6 +26,7 @@
 
   async function start() {
     try {
+      dropOldSavedResults();
       await loadScript('js/auth.js');
       await loadScript('js/review.js');
       await loadScript('js/inhouse.js');

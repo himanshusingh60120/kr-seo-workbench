@@ -1,13 +1,29 @@
 'use strict';
-/* Paste handling: turns content pasted from Google Docs, Word or plain text into clean blocks
-   (paragraphs with links, headings, list items, tables) used by the RD and DM tabs. */
+/* Paste handling: turns content pasted from Google Docs, Word, a web page, a spreadsheet cell or plain text into
+   clean blocks (paragraphs with links, headings, list items, tables) used by the RD and DM tabs.
+   Paragraphs must never be glued together ("period.The"), whatever the pasted HTML looks like: every block-level
+   tag and every line break counts as a gap, and a table that only wraps the text is read as normal paragraphs. */
 (function () {
   const KR = window.KR;
   const { $$, esc } = KR;
 
-  const BLOCK_SEL = 'p,div,ul,ol,li,table,h1,h2,h3,h4,h5,h6,blockquote,section,article,header,footer';
+  const BLOCK_SEL = 'p,div,ul,ol,li,table,h1,h2,h3,h4,h5,h6,blockquote,section,article,header,footer,' +
+    'main,aside,nav,pre,address,figure,figcaption,dl,dt,dd,details,summary,form,center';
+  const BLOCK_TAG_RE = /^(?:P|DIV|UL|OL|LI|TABLE|THEAD|TBODY|TFOOT|TR|TD|TH|H[1-6]|BLOCKQUOTE|SECTION|ARTICLE|HEADER|FOOTER|MAIN|ASIDE|NAV|PRE|ADDRESS|FIGURE|FIGCAPTION|DL|DT|DD|DETAILS|SUMMARY|FORM|CENTER|BR|HR)$/;
 
-  function textOf(node) { return String(node.textContent || '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim(); }
+  // The text of a node, with a gap wherever a block-level tag or a line break separates two pieces of text.
+  function rawText(node) {
+    let out = '';
+    node.childNodes.forEach((ch) => {
+      if (ch.nodeType === 3) { out += ch.textContent; return; }
+      if (ch.nodeType !== 1) return;
+      const block = BLOCK_TAG_RE.test(ch.tagName);
+      out += (block ? ' ' : '') + rawText(ch) + (block ? ' ' : '');
+    });
+    return out;
+  }
+
+  function textOf(node) { return rawText(node).replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim(); }
   function styleOf(el) { return (el && el.getAttribute && el.getAttribute('style')) || ''; }
   function isMsoIgnore(el) { return el.nodeType === 1 && /mso-list:\s*ignore/i.test(styleOf(el)); }
   function isMsoList(el) { return /MsoListParagraph/i.test(el.getAttribute('class') || '') || /mso-list:\s*l\d/i.test(styleOf(el)); }
@@ -25,7 +41,7 @@
     } catch (e) { return ''; }
   }
 
-  // Inline HTML keeping only text, links and sup/sub.
+  // Inline HTML keeping only text, links and sup/sub. A block-level tag met here still leaves a gap.
   function cleanInline(node) {
     let out = '';
     node.childNodes.forEach((ch) => {
@@ -42,7 +58,8 @@
         return;
       }
       if (tag === 'sup' || tag === 'sub') { out += '<' + tag + '>' + cleanInline(ch) + '</' + tag + '>'; return; }
-      out += cleanInline(ch);
+      const block = BLOCK_TAG_RE.test(ch.tagName);
+      out += (block ? ' ' : '') + cleanInline(ch) + (block ? ' ' : '');
     });
     return out.replace(/\s+/g, ' ');
   }
@@ -77,6 +94,12 @@
   function splitOnBr(node) {
     if (!node.querySelector || !node.querySelector('br')) return [node];
     return node.innerHTML.split(/<br\s*\/?>/i).map((h) => { const d = document.createElement('div'); d.innerHTML = h; return d; });
+  }
+
+  // A table that only wraps running text (a spreadsheet cell holding the whole document, or a page laid out with
+  // a table) is not a data table: its cells are read as normal paragraphs.
+  function isLayoutTable(table, cells) {
+    return cells.some((c) => textOf(c).length > 600 || c.querySelectorAll('p,li,h1,h2,h3,h4,h5,h6,br').length > 4);
   }
 
   function extractBlocks(root) {
@@ -114,6 +137,8 @@
       };
       Array.from(parent.childNodes).forEach((n) => {
         if (n.nodeType === 8) return;
+        // A line break ends the paragraph being collected.
+        if (n.nodeType === 1 && n.tagName === 'BR') { flush(); return; }
         if (n.nodeType === 3 || (n.nodeType === 1 && !isBlockEl(n))) { buf.push(n); return; }
         flush();
         if (n.nodeType === 1) visit(n);
@@ -125,6 +150,8 @@
       const tag = node.tagName.toLowerCase();
       if (['script', 'style', 'meta', 'link', 'title', 'head', 'xml', 'svg', 'img', 'br', 'hr'].indexOf(tag) >= 0 || tag.indexOf(':') >= 0 || isMsoIgnore(node)) return;
       if (tag === 'table') {
+        const cells = Array.from(node.querySelectorAll('td,th')).filter((c) => c.closest('table') === node);
+        if (isLayoutTable(node, cells)) { cells.forEach((c) => visitChildren(c)); return; }
         const rows = Array.from(node.rows || []).map((tr) => Array.from(tr.cells).map((td) => textOf(td))).filter((r) => r.some(Boolean));
         if (rows.length) blocks.push({ kind: 'table', rows, text: '' });
         return;
@@ -144,7 +171,7 @@
         return;
       }
       if (isMsoList(node)) { pushLi(node, 'mso'); return; }
-      if (node.querySelector(BLOCK_SEL)) { visitChildren(node); return; }
+      if (node.querySelector(BLOCK_SEL) || node.querySelector('br')) { visitChildren(node); return; }
       pushPara(node);
     }
 
@@ -205,6 +232,13 @@
       let blocks;
       if (html && /<[a-z][\s\S]*>/i.test(html)) blocks = extractBlocks(new DOMParser().parseFromString(html, 'text/html').body);
       else blocks = textToBlocks(text);
+      // If the HTML gave fewer paragraphs than the plain text has lines (the page hid its paragraph breaks from us),
+      // the plain text is the better guide to where paragraphs end.
+      const lines = textToBlocks(text);
+      if (html && blocks.length < 3 && lines.length > blocks.length * 3) {
+        blocks = lines;
+        KR.toast('Pasted as plain text because the paragraph breaks could not be read from the source: hyperlinks were not captured.');
+      }
       const out = blocksToEditorHtml(blocks);
       let ok = false;
       try { ok = document.execCommand('insertHTML', false, out); } catch (err) { ok = false; }
