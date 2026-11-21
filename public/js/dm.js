@@ -19,6 +19,22 @@
   const STOP = new Set(['this', 'that', 'with', 'from', 'have', 'will', 'been', 'they', 'their', 'which', 'when', 'what', 'your', 'about', 'more', 'into', 'than', 'also', 'some', 'other', 'these', 'those', 'such', 'most', 'like', 'just', 'over', 'after', 'before', 'then', 'each', 'only', 'even', 'well', 'back', 'very', 'much', 'both', 'through', 'should', 'could', 'would', 'make', 'made', 'being', 'there', 'where', 'here', 'were', 'them', 'many', 'come', 'work', 'need', 'take', 'used', 'uses', 'using', 'market', 'markets', 'global', 'growth', 'demand', 'industry']);
   const GENERIC = new Set(['market', 'markets', 'industry', 'global', 'size', 'share', 'report', 'analysis', 'trends', 'growth', 'forecast', 'and', 'the', 'for', 'with']);
 
+  // ---------- image caption lines in the pasted content ----------
+  // Writers often type the image's alt text as a line of its own next to the infographic in the document
+  // ("<Market> Size & Share, By Revenue, 2026-2033"). The picture itself is dropped on paste but that line
+  // stays, and it would be published as visible page text. Such lines are removed: alt text belongs only
+  // inside the image's alt attribute.
+  const CAPTION_RE = /\bsize\s*(?:&|and)\s*share\b[\s,]*by revenue[\s,]*(?:19|20)\d{2}\s*[-\u2013\u2014]\s*(?:19|20)\d{2}\.?$/i;
+
+  function normCaption(s) { return String(s || '').toLowerCase().replace(/[\u2013\u2014]/g, '-').replace(/[^a-z0-9]+/g, ' ').trim(); }
+
+  function isImageCaption(text, alts) {
+    const t = String(text || '').replace(/\s+/g, ' ').trim();
+    if (!t || t.length > 160) return false;
+    if (alts.indexOf(normCaption(t)) >= 0) return true;
+    return CAPTION_RE.test(t);
+  }
+
   // ---------- segmentation table ----------
   function tokensToRows(tok) {
     const rows = [];
@@ -463,10 +479,14 @@
       const kwRaw = $('#dmKeyword').value.trim();
       if (!kwRaw) throw new Error('Enter the keyword this content is about (for example: Genetic Engineering Market).');
       const keyword = KR.titleCase(kwRaw);
-      const raw = B.extractBlocks($('#dmContent'));
-      if (raw.length < 3) throw new Error('Paste the content first.');
+      const pasted = B.extractBlocks($('#dmContent'));
+      if (pasted.length < 3) throw new Error('Paste the content first.');
       const inputs = readImageInputs();
       inputs.forEach((x) => { if (!/^https?:\/\//i.test(x.url)) throw new Error('Image URLs must start with https:// (' + x.url + ').'); });
+      // Caption lines typed next to the image in the document must not become page text.
+      const alts = inputs.map((x) => normCaption(x.alt)).filter(Boolean);
+      const raw = pasted.filter((b) => b.kind === 'table' || !isImageCaption(b.text, alts));
+      const captions = pasted.length - raw.length;
       KR.busy(btn, true, 'Optimizing…');
       let s = prog.step('Structuring the content and adding H-tags…');
       const units = finalizeUnits(classify(raw, keyword), $('#dmStdImgs').checked);
@@ -475,6 +495,7 @@
       D.keyword = keyword;
       const count = (type) => units.filter((u) => u.type === type).length;
       s.done('Structured: ' + count('h2') + ' H2, ' + count('h3') + ' H3, ' + count('ul') + ' lists, ' + count('table') + ' table(s)');
+      if (captions) prog.info('Removed ' + captions + ' image caption line' + (captions === 1 ? '' : 's') + ' from the content. The alt text is kept only inside the image.');
       if (!count('table')) prog.info('No segmentation table was detected. Check that the "Market Segmentation" section was pasted.');
 
       const yrs = overviewText().match(/\((\d{4})\s*[-\u2013\u2014]\s*(\d{4})\)/);

@@ -29,7 +29,7 @@ module.exports = handler({
       serviceAccount: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL || '',
       sheetId: id,
       sheetUrl: 'https://docs.google.com/spreadsheets/d/' + id + '/edit',
-      managerEmail: process.env.MANAGER_EMAIL || 'habi@kingsresearch.com',
+      managerEmail: process.env.MANAGER_EMAIL || 'hummer@kingsresearch.com',
       // The Setup dialog prints this line as it is, so the cost-saving settings are shown here too.
       model: (process.env.OPENAI_MODEL || 'gpt-4.1-mini') +
         ' · Fact-check engine: ' + ENGINE_LABEL[eng] +

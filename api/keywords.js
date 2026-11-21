@@ -1,6 +1,7 @@
 'use strict';
 
 // Keywords: opportunity finder (competitor gap + reports sitemap -> New report / Revamp), the last saved scan,
+// in-house keywords added by the people allowed to (volume, scope and reason shown before they are added),
 // more secondary keywords from the pages ranking in Google's top 10, analyst verification, manager approval,
 // the Research List, and the SEO check of saved keywords.
 
@@ -23,8 +24,17 @@ const STATUS = {
   REJECTED: 'Rejected'
 };
 
-function managerEmail() { return String(process.env.MANAGER_EMAIL || 'habi@kingsresearch.com').trim().toLowerCase(); }
+function managerEmail() { return String(process.env.MANAGER_EMAIL || 'hummer@kingsresearch.com').trim().toLowerCase(); }
 function ourDomain() { return hostOf(process.env.SITE_BASE || 'https://www.kingsresearch.com') || 'kingsresearch.com'; }
+
+// The people who may add in-house keywords straight into the pipeline.
+function inhouseEditors() {
+  return String(process.env.INHOUSE_EDITORS || 'mmaniyar@kingsresearch.com,hummer@kingsresearch.com').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+}
+function isEditor(req) { return inhouseEditors().indexOf(String((req && req.user) || '').toLowerCase()) >= 0; }
+function requireEditor(req) {
+  if (!isEditor(req)) throw new HttpError(403, 'Only ' + inhouseEditors().join(' and ') + ' can add in-house keywords.');
+}
 
 function num(v) {
   if (v === null || v === undefined || v === '') return '';
@@ -47,6 +57,14 @@ function cleanDomain(d) {
 }
 
 function cleanKw(k) { return String(k || '').toLowerCase().replace(/\s+/g, ' ').trim(); }
+
+// "Smart Helmet" -> "smart helmet market": a report's primary keyword is always the market's head term.
+function reportKeyword(raw) {
+  let k = cleanKw(raw).replace(/[^a-z0-9&+\-./' ]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!k) return '';
+  if (!/\b(market|markets|industry)\b/.test(k)) k += ' market';
+  return k;
+}
 
 function publicRow(r) {
   const seo = String(r['SEO Check'] || '');
@@ -173,6 +191,40 @@ function parsePositions(text) {
   return out;
 }
 
+// ---------- why take a topic up ----------
+// The search numbers behind a topic, in one line.
+function topicStats(t) {
+  const comps = String(t.comps || '').split(',').map((s) => s.trim()).filter((s) => s.indexOf('.') > 0);
+  const positions = (String(t.comps || '').match(/#(\d+)/g) || []).map((s) => Number(s.slice(1)));
+  const best = positions.length ? Math.min.apply(null, positions) : null;
+  const total = Number(t.total) || 0;
+  const hasKd = t.kd !== null && t.kd !== undefined && String(t.kd).trim() !== '' && Number.isFinite(Number(t.kd));
+  const line = (total ? total.toLocaleString('en-US') + ' searches a month across the keyword variants' : 'search volume not available') + '; ' +
+    (comps.length ? comps.length + (comps.length === 1 ? ' competitor ranks' : ' competitors rank') + (best ? ', best position #' + best : '') : 'no competitor ranking data') +
+    (hasKd ? '; KD ' + Number(t.kd) : '') + '.';
+  return { comps, best, total, line };
+}
+
+// One line per market on why the industry makes the report worth publishing (written by the chat model from
+// its general knowledge, with numbers banned so that nothing is invented). items: [{ key, title }] -> Map key -> line.
+async function marketReasons(items) {
+  const list = (items || []).filter((x) => x && x.key && x.title).slice(0, 40);
+  const out = new Map();
+  if (!list.length) return out;
+  const res = await ai.chatJSON({
+    system: 'You are the head of research planning at Kings Research, a market research publisher. Respond in JSON only.',
+    user: 'For each market below, write ONE line (at most 22 words) on why the industry makes a report on it worth publishing now: the main demand driver, shift or need in that market. ' +
+      'Be specific to the market, in plain business English. Do not include market sizes, growth rates, percentages, years, search volumes, rankings or any other numbers, and do not mention Kings Research or competitors.\n' +
+      'Return {"items":[{"key":"","why":""}]} with exactly one entry per key, copying the key exactly.\n\nMARKETS (key | market):\n' +
+      list.map((x) => x.key + ' | ' + x.title).join('\n')
+  });
+  (Array.isArray(res.items) ? res.items : []).forEach((x) => {
+    const why = String((x && x.why) || '').replace(/\s+/g, ' ').trim();
+    if (x && x.key && why) out.set(String(x.key), why.replace(/[.\s]*$/, '.'));
+  });
+  return out;
+}
+
 // ---------- topic prioritisation with Jev (cheaper than a chat model) ----------
 // Search volume and competitor counts set the base priority (plain maths). Jev answers the judgment questions:
 // is this a sellable report topic, how strong is the commercial demand, and is a "similar" report the same market.
@@ -206,29 +258,20 @@ async function rankOneWithJev(t) {
   }
   const ans = await jev.decide(state, questions);
 
-  const comps = String(t.comps || '').split(',').map((s) => s.trim()).filter((s) => s.indexOf('.') > 0);
-  const positions = (String(t.comps || '').match(/#(\d+)/g) || []).map((s) => Number(s.slice(1)));
-  const best = positions.length ? Math.min.apply(null, positions) : null;
-  const total = Number(t.total) || 0;
-  let level = LEVELS.indexOf(T.heuristicPriority({ totalVolume: total, competitors: comps }));
+  const stats = topicStats(t);
+  let level = LEVELS.indexOf(T.heuristicPriority({ totalVolume: stats.total, competitors: stats.comps }));
   const demand = (ans.value && ans.value.choice) || 'medium';
   if (demand === 'high' && jev.optionProb(ans.value, 'high') >= 0.7) level = Math.min(2, level + 1);
   if (demand === 'low' && jev.optionProb(ans.value, 'low') >= 0.6) level = Math.max(0, level - 1);
 
   const sameMarket = similar && !!ans.same && ans.same.probability >= 0.7;
-  const action = t.status === 'Revamp' || sameMarket ? 'Revamp' : 'New report';
-  const kd = Number(t.kd);
-  const reason = (total ? total.toLocaleString('en-US') + ' searches a month across the keyword variants' : 'Search volume not available') + '; ' +
-    (comps.length ? comps.length + (comps.length === 1 ? ' competitor ranks' : ' competitors rank') + (best ? ' (best position #' + best + ')' : '') : 'no competitor ranking data') +
-    (Number.isFinite(kd) && String(t.kd).trim() !== '' ? '; KD ' + kd : '') + '. Commercial demand: ' + demand + '.' +
-    (similar ? (sameMarket ? ' Our existing report covers the same market, so revamp it.' : ' Our similar report covers a different market.') : '');
   return {
     key: String(t.key),
     keep: !ans.sellable || ans.sellable.probability >= 0.4,
     priority: LEVELS[level],
     title,
-    action,
-    reason
+    action: t.status === 'Revamp' || sameMarket ? 'Revamp' : 'New report',
+    extra: similar ? (sameMarket ? 'Our existing report covers the same market, so revamp it.' : 'Our similar report covers a different market.') : ''
   };
 }
 
@@ -297,30 +340,55 @@ module.exports = handler({
     return { topics, scannedAt: latest, scannedBy: String(scan[0]['Scanned By'] || ''), location: String(scan[0]['Location'] || 'Global') };
   },
 
-  // Prioritises topics. With a Jev key this uses Jev (far cheaper); set DECISION_ENGINE=openai to use the chat model.
-  // If Jev fails for any reason, the chat model is used for that batch.
+  // Prioritises topics and says why each is worth taking up. With a Jev key the priority comes from Jev (far
+  // cheaper; set DECISION_ENGINE=openai for the chat model, which is also used if Jev fails). The reason is one
+  // line about the market itself, followed by the search numbers.
   async rank(b) {
-    const items = (Array.isArray(b.items) ? b.items : []).slice(0, 30);
+    const items = (Array.isArray(b.items) ? b.items : []).filter((t) => t && t.key).slice(0, 30);
     if (!items.length) return { items: [] };
+    let ranked = null;
+    let engine = 'openai';
     let note = '';
     if (jev.configured() && String(process.env.DECISION_ENGINE || 'jev').toLowerCase() !== 'openai') {
       try {
-        return { items: await pool(items.filter((t) => t && t.key), 6, rankOneWithJev), engine: 'jev' };
+        ranked = await pool(items, 6, rankOneWithJev);
+        engine = 'jev';
       } catch (e) {
         note = e.message;
       }
     }
-    const out = await ai.chatJSON({ system: T.rankSystem(), user: T.rankTask(items) });
-    return {
-      items: (Array.isArray(out.items) ? out.items : []).filter((x) => x && x.key).map((x) => ({
+    if (!ranked) {
+      const out = await ai.chatJSON({ system: T.rankSystem(), user: T.rankTask(items) });
+      ranked = (Array.isArray(out.items) ? out.items : []).filter((x) => x && x.key).map((x) => ({
         key: String(x.key),
         keep: x.keep !== false,
         priority: ['High', 'Medium', 'Low'].indexOf(x.priority) >= 0 ? x.priority : 'Medium',
         title: String(x.title || ''),
         action: x.action === 'Revamp' ? 'Revamp' : 'New report',
-        reason: String(x.reason || '')
-      })),
-      engine: 'openai',
+        extra: ''
+      }));
+    }
+    const byKey = new Map(items.map((t) => [String(t.key), t]));
+    let whys = new Map();
+    try {
+      whys = await marketReasons(ranked.filter((x) => x.keep).map((x) => ({ key: x.key, title: x.title || titleCase(String((byKey.get(x.key) || {}).primary || x.key)) })));
+    } catch (e) {
+      note = note || e.message;
+    }
+    return {
+      items: ranked.map((x) => {
+        const why = whys.get(x.key) || '';
+        const stats = topicStats(byKey.get(x.key) || {}).line;
+        return {
+          key: x.key,
+          keep: x.keep,
+          priority: x.priority,
+          title: x.title,
+          action: x.action,
+          reason: (why ? why + ' ' : '') + 'Data: ' + stats + (x.extra ? ' ' + x.extra : '')
+        };
+      }),
+      engine,
       note
     };
   },
@@ -350,6 +418,98 @@ module.exports = handler({
     if (!rows.length) return { saved: 0 };
     await sheets.appendRows('OPPORTUNITIES', rows);
     return { saved: rows.length };
+  },
+
+  // ---------- in-house keywords ----------
+  // Whether the signed-in person may add in-house keywords (the panel is only shown to them).
+  async inhouseInfo(b, req) {
+    return { allowed: isEditor(req), editors: inhouseEditors() };
+  },
+
+  // Preview only, nothing is saved: for each pasted keyword, the search volume, the scope (new report, revamp
+  // of a published report, or a similar report exists; already in the pipeline or not) and why to take it up.
+  async inhouse(b, req) {
+    requireEditor(req);
+    const seen = new Set();
+    const kws = [];
+    (Array.isArray(b.keywords) ? b.keywords : String(b.keywords || '').split(/[\n,]+/)).forEach((raw) => {
+      const k = reportKeyword(raw);
+      if (k && !seen.has(k)) { seen.add(k); kws.push(k); }
+    });
+    if (!kws.length) throw new HttpError(400, 'Paste at least one keyword.');
+    const list = kws.slice(0, 25);
+
+    const vols = new Map();
+    let volumeNote = '';
+    try {
+      (await mg.keywordImports(list, b.location_id)).forEach((k) => { if (k && k.kw) vols.set(cleanKw(k.kw), k); });
+    } catch (e) {
+      volumeNote = e.message;
+    }
+    const both = await Promise.all([sitemap.fetchSitemap('report'), pipelineIndex()]);
+    const idx = T.krIndex(both[0]);
+    const rows = list.map((kw) => {
+      const key = T.keyFor(kw);
+      const kr = T.matchTopic(key, idx);
+      const v = vols.get(kw) || {};
+      return {
+        keyword: kw,
+        title: titleCase(kw),
+        sv: numOrNull(v.sv),
+        kd: numOrNull(v.kd),
+        cpc: numOrNull(v.cpc),
+        status: kr.status,
+        action: kr.status === 'Revamp' ? 'Revamp' : 'New report',
+        url: kr.url || '',
+        name: kr.name || '',
+        inPipeline: both[1].get(key) || '',
+        why: ''
+      };
+    });
+    let whyNote = '';
+    try {
+      const whys = await marketReasons(rows.map((r) => ({ key: r.keyword, title: r.title })));
+      rows.forEach((r) => { r.why = whys.get(r.keyword) || ''; });
+    } catch (e) {
+      whyNote = e.message;
+    }
+    return { rows, volumeNote, whyNote, skipped: kws.length - list.length };
+  },
+
+  // Adds the confirmed in-house keywords to the pipeline: one keyword group per report, waiting for analyst
+  // verification like every other topic. The reason shown in the preview (edited or not) is saved with it.
+  async inhouseAdd(b, req) {
+    requireEditor(req);
+    const user = String(req.user);
+    const items = (Array.isArray(b.items) ? b.items : []).filter((x) => x && reportKeyword(x.keyword)).slice(0, 25);
+    if (!items.length) throw new HttpError(400, 'Tick at least one keyword to add.');
+    const pipe = await pipelineIndex();
+    const now = nowIST();
+    const base = Date.now();
+    let objs = [];
+    const added = [];
+    const skipped = [];
+    for (let i = 0; i < items.length; i++) {
+      const x = items[i];
+      const kw = reportKeyword(x.keyword);
+      const already = pipe.get(T.keyFor(kw));
+      if (already) { skipped.push(kw + ' (' + already + ')'); continue; }
+      const g = {
+        reportName: String(x.title || '').trim() || titleCase(kw),
+        seed: kw,
+        location: String(b.location || 'Global'),
+        action: x.action === 'Revamp' ? 'Revamp' : 'New report',
+        existingUrl: x.action === 'Revamp' ? String(x.existingUrl || '') : ''
+      };
+      const rows = [{
+        keyword: kw, type: 'Primary', sv: x.sv, kd: x.kd, cpc: x.cpc, ppc: null, competitors: '',
+        source: 'In-house', reason: String(x.why || '').trim(), placement: 'Title, H1, meta and Overview'
+      }];
+      objs = objs.concat(await groupObjects(g, rows, user, now, 'G-' + (base + i).toString(36).toUpperCase()));
+      added.push(kw);
+    }
+    if (objs.length) await sheets.appendRows('KEYWORDS', objs);
+    return { added: added.length, skipped };
   },
 
   // ---------- more secondary keywords from the Google top 10 ----------

@@ -2,18 +2,36 @@
 
 One tool for the whole report pipeline: **Keywords → RD → Content → DM → Publish Check → Live Tracker**, with every step logged to the Google Sheet **KR-Process**. Nothing runs on a schedule: every action starts when someone clicks a button.
 
+## Sign-in
+
+- Everyone signs in with their **@kingsresearch.com** email before the tool opens. The session lasts until the browser tab is closed (12 hours at most).
+- **First time:** the password is the starting password (`FIRST_PASSWORD`, default `1234`). The tool then makes the person set their own password (at least 6 characters) before it opens.
+- **Change password** and **Sign out** are beside the name box at the top right. The name box shows the signed-in email, and everything saved to the sheet is logged against it.
+- Accounts are kept in the **Users** sheet tab. Passwords are stored only as salted hashes, never as text.
+- **Forgotten password:** delete that person's row in the Users tab. Their next sign-in uses the starting password again.
+- Until someone has signed in for the first time, anyone who knows their email and the starting password could claim their account. Ask the team to sign in once, soon after this is deployed, or set a `FIRST_PASSWORD` that only the team knows.
+- The manager who approves keywords is `MANAGER_EMAIL` (hummer@kingsresearch.com), with the manager PIN.
+
 ## What each tab does
 
 | Tab | What it does | Sheet tab |
 |---|---|---|
 | **Keywords → 1 · Find opportunities** | Mangools keyword-gap analysis of kingsresearch.com against the 5 competitors, grouped into report topics and checked against our reports sitemap: not published → **New report**, published but not ranking → **Revamp**. AI prioritises topics; the top High-priority ones go to analyst verification automatically. Sort by priority, volume, all-variants volume, KD or competitors. **More keywords** reads the pages ranking in Google's top 10 for the topic and adds secondary keywords from them (with Mangools volumes). The last scan reloads from the sheet. | Opportunities, Keywords |
 | **Keywords → 2 · Analyst verification** | Good / Not good + reason per keyword (secondaries sorted by volume, SEO warnings shown). **Suggest more secondary keywords** reads the top-10 pages and adds the ticked ones to the group. | Keywords |
-| **Keywords → 3 · Manager approval** | habi@kingsresearch.com + PIN approves → Research List with the approval date. | Research List |
-| **RD** | Paste the RD: every use of the primary and secondary keywords **highlighted in colour with a count**; plus data consistency, grammar, structure, fact-check, external link suggestions, link status. | RD, Fact Cache |
+| **Keywords → 3 · Manager approval** | The manager (hummer@kingsresearch.com) + PIN approves → Research List with the approval date. | Research List |
+| **RD** | Paste the RD: every use of the primary and secondary keywords **highlighted in colour with a count**, and the text of every problem **shaded faint red**; plus data consistency, grammar, structure, fact-check, external link suggestions, link status. Each issue has an **Error** tick box (see below). | RD, Fact Cache, Issue Decisions |
 | **Content** | Reserved for the Content team. | Content |
-| **DM** | H2/H3, segmentation table, internal links, **one or more images** (first = infographic; each draggable in Preview; alt text only inside each image's HTML `alt` attribute), CMS boxes for Meta Title, Meta Description and HTML. | DM |
+| **DM** | H2/H3, segmentation table, internal links, **one or more images** (first = infographic; each draggable in Preview; alt text only inside each image's HTML `alt` attribute; caption lines typed next to an image in the document are removed), CMS boxes for Meta Title, Meta Description and HTML. | DM |
 | **Publish Check** | Preview URL → data consistency, facts, FAQs, infographic numbers vs content, spelling, meta, links. | Publish Check, Fact Cache |
 | **Live Tracker** | Sync the reports sitemap → reports and revamps marked Live with their date → live checks (everything above **plus Report Snapshot and Table of Contents**). | Sitemap, Live Check, Research List, Fact Cache |
+
+## Marking an RD issue as "not an error"
+
+- Every issue in the RD results has a ticked **Error** box. If the issue is not really an error, untick it.
+- The tool saves a row in the **Issue Decisions** sheet tab: who (their sign-in email), when, which report, and the issue.
+- When anyone checks the **same report** again (same report name), that issue is shown faded with the note "xyz@kingsresearch.com marked this as not an error on <date>", and its faint red shading is removed from the content.
+- Ticking the box again is saved too ("marked this as an error again"). Rows are only ever added, so the tab is a full history of who decided what.
+- Issues are matched by the report name and the quoted text. If the sentence is edited, it counts as a new issue.
 
 ## Keeping the AI cost down
 
@@ -35,13 +53,14 @@ Still done by gpt-4.1-mini, because they need written fixes or image reading: RD
 
 ## Check rules (to keep false alarms out)
 
-- Only real problems are reported; "consistent / no conflict" notes and vague "please confirm" items are dropped.
+- Only real problems are reported; "consistent / no conflict" notes and vague "please confirm" or "double-check" items are dropped.
+- A value given for a region, a country or a segment is a part of the market, so it is never compared with the market total. What is checked is the maths: a share and its value must agree with the market total for that year.
 - North America is always "U.S., Canada, and Mexico" (no "Rest of North America").
 - Superlatives are judged per segmentation category (the fastest deployment mode and the fastest technology can both be "fastest").
 - FAQ answers that repeat the description word for word are never flagged; extra explanation in an FAQ is fine.
 - Infographic: only numbers or statements that **contradict** the content are flagged. Masked values (XX.X%, X.XX%) and numbers the content doesn't mention are fine; styling is never flagged.
 - Table of Contents: company names are not expected there; website labels such as "Table Of Content" are ignored.
-- Fact-check: each claim is searched separately; competitor and other report-seller sites are never used as sources; a source must mention the organization (or a key term) of the claim, otherwise it is not used or suggested; in the deep engine a "correction" that repeats the claim counts as Supported; links on sites that block automated checks are not called broken.
+- Fact-check: each claim is searched separately; competitor sites, other report sellers and market-report press releases are never used as sources; a source must mention the organization (or a key term) of the claim, otherwise it is not used or suggested; in the deep engine a "correction" that repeats the claim counts as Supported; links on sites that block automated checks are not called broken.
 
 ## SEO Check in the Keywords sheet
 
@@ -50,11 +69,11 @@ Every saved secondary keyword gets an **SEO Check**: **Link instead** (main topi
 ## Deploy and environment
 
 1. Copy the updated files into your local folder, then `git add .`, `git commit -m "..."`, `git push`. Vercel redeploys automatically.
-2. Required Vercel variables: `OPENAI_API_KEY`, `MANGOOLS_API_KEY`, `GOOGLE_SERVICE_ACCOUNT_EMAIL`, `GOOGLE_PRIVATE_KEY`, `MANAGER_PIN`.
+2. Required Vercel variables: `OPENAI_API_KEY`, `MANGOOLS_API_KEY`, `GOOGLE_SERVICE_ACCOUNT_EMAIL`, `GOOGLE_PRIVATE_KEY`, `MANAGER_PIN`, `MANAGER_EMAIL` (hummer@kingsresearch.com).
 3. Cost savers (recommended): ONE Jev key, either `TYPESAFE_API_KEY` (console.typesafe.ai) or `AI_GATEWAY_API_KEY` (Vercel AI Gateway), and `TAVILY_API_KEY` (tavily.com). `SERPER_API_KEY` is an optional backup search. Without a Jev key the tool uses OpenAI web search as before; the Fact Cache and the unchanged-RD saving still apply.
-4. Optional: `FACT_ENGINE`, `FACT_MIN_CONFIDENCE`, `FACT_CACHE_DAYS`, `FACT_TRIAGE`, `DECISION_ENGINE`, `JEV_MODEL`, `TEAM_ACCESS_KEY`, `GOOGLE_SHEET_ID`, `MANAGER_EMAIL`, `OPENAI_MODEL`, `OPENAI_VISION_MODEL`, `OPENAI_SEARCH_MODEL`, `OPENAI_WEB_SEARCH`, `COMPETITORS`, `MANGOOLS_LANGUAGE_ID`, `SITE_BASE`, `APP_TIMEZONE`, `KR_COOKIE`. See `.env.example`.
+4. Optional: `FIRST_PASSWORD`, `LOGIN_EMAIL_DOMAIN`, `AUTH_SECRET`, `FACT_ENGINE`, `FACT_MIN_CONFIDENCE`, `FACT_CACHE_DAYS`, `FACT_TRIAGE`, `DECISION_ENGINE`, `JEV_MODEL`, `TEAM_ACCESS_KEY`, `GOOGLE_SHEET_ID`, `OPENAI_MODEL`, `OPENAI_VISION_MODEL`, `OPENAI_SEARCH_MODEL`, `OPENAI_WEB_SEARCH`, `COMPETITORS`, `MANGOOLS_LANGUAGE_ID`, `SITE_BASE`, `APP_TIMEZONE`, `KR_COOKIE`. See `.env.example`.
 5. Share KR-Process with the service-account email as Editor; enable the Google Sheets API.
-6. In the tool: **Setup → Create / repair sheet tabs** (this adds the **Fact Cache** tab), then **Fix existing keyword rows**. The Setup dialog shows which fact-check engine is active and whether the Jev and web search keys are set.
+6. In the tool: **Setup → Create / repair sheet tabs** (this adds the **Fact Cache**, **Users** and **Issue Decisions** tabs), then **Fix existing keyword rows**. The Setup dialog shows which fact-check engine is active and whether the Jev and web search keys are set.
 
 ## Mangools lookups
 
@@ -68,3 +87,4 @@ Every saved secondary keyword gets an **SEO Check**: **Link instead** (main topi
 - Snapshot/TOC: the tool tries the link on the page, then the preview URL, then the live URL.
 - Each server call is limited to 60 s; long jobs are split into many calls by the browser.
 - A Deep check done after a Publish or Live check has been saved updates the Fact Cache, but not the row already written to the Publish Check or Live Check sheet.
+- The "Issue Count" saved to the RD sheet counts every issue found, including ones marked "not an error"; the Issue Decisions tab shows which were dismissed and by whom.

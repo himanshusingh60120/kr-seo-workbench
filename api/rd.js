@@ -4,8 +4,9 @@
 // external link suggestions and link status. (Keyword highlighting and counts happen in the browser.)
 // The fact-check actions are also used by Publish and Live checks. The fact-check logic itself, including the
 // "Fact Cache" that stops the same sentence being paid for twice, lives in lib/factcheck.js.
+// "decisions" and "decide" record who marked an RD issue as not an error (the "Issue Decisions" sheet tab).
 
-const { handler, HttpError, nowIST, isCompetitor, toList } = require('../lib/http');
+const { handler, HttpError, nowIST, isCompetitor, toList, cap } = require('../lib/http');
 const checks = require('../lib/checks');
 const ai = require('../lib/openai');
 const P = require('../lib/prompts');
@@ -13,6 +14,34 @@ const sheets = require('../lib/sheets');
 const FC = require('../lib/factcheck');
 const jev = require('../lib/jev');
 const { checkUrls } = require('../lib/linkcheck');
+
+// The AI sometimes files wording problems under "consistency". An item is a language item when it talks about
+// grammar, spelling or naming and does not describe a number conflict.
+const LANG_RE = /grammar|spelling|misspel|typo|\barticle\b|tense|punctuation|comma|capitali[sz]|agreement|extra word|missing word|repeated|repetition|duplicate|abbreviat|house style|unnatural|phrase|plural|singular|hyphen|wording|synonym|named inconsistently|full form/i;
+const NUMBER_RE = /mismatch|differ|conflict|contradict|\bcagr\b|\bshare\b|\d{3,}|\d ?%/i;
+
+function splitConsistency(list) {
+  const data = [];
+  const language = [];
+  (list || []).forEach((x) => {
+    if (LANG_RE.test(x.problem) && !NUMBER_RE.test(x.problem)) language.push(Object.assign({}, x, { severity: x.severity === 'error' ? 'warning' : x.severity }));
+    else data.push(x);
+  });
+  return { data, language };
+}
+
+// A fact worth checking names something: it has a month-and-year date, or a proper name after its first word.
+// Follow-on sentences such as "This approval allows couples to ..." have neither and are left out.
+const MONTH_RE = /\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+(?:\d{1,2},\s+)?(?:19|20)\d{2}\b/;
+function namesSomething(sentence) {
+  const s = String(sentence || '');
+  return MONTH_RE.test(s) || /\s[A-Z][a-z]{2,}/.test(s.slice(1));
+}
+
+// Reports and issues are matched by their letters and digits only, so spacing and punctuation do not matter.
+function plainKey(s, max) { return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().slice(0, max || 200); }
+
+const DECISIONS = ['Not an error', 'Error'];
 
 module.exports = handler({
   async review(b) {
@@ -31,15 +60,56 @@ module.exports = handler({
     } catch (e) {
       aiError = e.message;
     }
+    const sorted = splitConsistency(checks.normIssues(out.consistency, 'Consistency'));
     return {
       coverage,
       figures: fig.figures,
-      consistency: checks.strip(checks.dedupe(fig.issues.concat(lint.filter((i) => i.category === 'data'), checks.normIssues(out.consistency, 'Consistency')))),
-      language: checks.strip(checks.dedupe(lint.filter((i) => i.category !== 'data').concat(checks.normIssues(out.language, 'Language')))),
+      consistency: checks.strip(checks.dedupe(fig.issues.concat(lint.filter((i) => i.category === 'data'), sorted.data))),
+      language: checks.strip(checks.dedupe(lint.filter((i) => i.category !== 'data').concat(checks.normIssues(out.language, 'Language'), sorted.language))),
       structure: checks.normIssues(out.structure, 'Structure'),
       keywordTips: (Array.isArray(out.keyword_tips) ? out.keyword_tips : []).filter((x) => x && x.keyword).map((x) => ({ keyword: String(x.keyword), suggestion: String(x.suggestion || '') })),
       aiError
     };
+  },
+
+  // The current decision for every issue of a report that someone has marked (latest row wins).
+  async decisions(b) {
+    const report = plainKey(b.report, 160);
+    if (!report) return { decisions: [] };
+    const rows = await sheets.readTab('DECISIONS');
+    const latest = new Map();
+    rows.forEach((r) => {
+      const key = String(r['Key'] || '').trim();
+      if (!key || plainKey(r['Report'], 160) !== report) return;
+      latest.set(key, { key, decision: String(r['Decision'] || ''), by: String(r['By'] || ''), at: String(r['At'] || '') });
+    });
+    return { decisions: Array.from(latest.values()) };
+  },
+
+  // Records that the signed-in person marked an issue as "Not an error" (or as an "Error" again).
+  // The name comes from the sign-in, not from the browser, so the log can be trusted.
+  async decide(b, req) {
+    const by = String((req && req.user) || '').trim();
+    if (!by) throw new HttpError(419, 'Please sign in to continue.');
+    const reportName = String(b.report || '').trim();
+    if (!plainKey(reportName)) throw new HttpError(400, 'Enter the report name before marking an issue.');
+    const decision = DECISIONS.indexOf(b.decision) >= 0 ? b.decision : '';
+    if (!decision) throw new HttpError(400, 'Unknown decision.');
+    const key = plainKey(b.quote || b.problem);
+    if (!key) throw new HttpError(400, 'This issue has no text to remember it by.');
+    const at = nowIST();
+    await sheets.appendRows('DECISIONS', [{
+      'At': at,
+      'By': by,
+      'Report': reportName,
+      'Decision': decision,
+      'Section': String(b.section || ''),
+      'Severity': String(b.severity || ''),
+      'Problem': cap(b.problem, 1000),
+      'Quote': cap(b.quote, 600),
+      'Key': key
+    }]);
+    return { key, decision, by, at };
   },
 
   // Finds the facts to check. Facts already in the Fact Cache come back with their stored verdict ("cached"),
@@ -81,6 +151,7 @@ module.exports = handler({
         return { sentence, key, claim: String(c.claim), anchor: String(c.anchor || '').trim(), date: String(c.date || ''), cached: hit ? FC.fromCache(hit) : null };
       });
     }
+    list = list.filter((c) => namesSomething(c.sentence));
 
     const claims = list.map((c, i) => {
       const lower = c.sentence.toLowerCase();
@@ -137,9 +208,9 @@ module.exports = handler({
     return { results: results.map((r) => Object.assign({}, r, { competitor: isCompetitor(r.url) })) };
   },
 
-  async save(b) {
-    const writer = String(b.user || '').trim();
-    if (!writer) throw new HttpError(400, 'Enter your name (top right) first.');
+  async save(b, req) {
+    const writer = String((req && req.user) || b.user || '').trim();
+    if (!writer) throw new HttpError(400, 'Sign in first.');
     await sheets.appendRows('RD', [{
       'Checked At': nowIST(),
       'Writer': writer,

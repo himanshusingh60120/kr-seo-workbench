@@ -1,6 +1,7 @@
 'use strict';
 /* RD tab: the analyst pastes the RD and sees every use of the primary and secondary keywords highlighted in colour,
-   with a count per keyword. Data consistency, language, structure and fact checks run alongside.
+   with a count per keyword. Data consistency, language, structure and fact checks run alongside, and the text of
+   every problem found is shaded faint red in the same view (click an issue to jump to it).
    If nothing has changed since the last check, the saved results are shown instead of paying for the AI again. */
 (function () {
   const KR = window.KR;
@@ -11,6 +12,8 @@
   const PRIMARY_COLOR = { bg: '#2B71E2', fg: '#FFFFFF' };
   const PALETTE = ['#FFE08A', '#B9F0C9', '#FFC9DE', '#C9E4FF', '#E2D4FF', '#FFD8B5', '#C8F2F0', '#F5F0A8', '#FFCACA', '#D6E8B8',
     '#F2D0F5', '#CFE0E8', '#FFE3C2', '#D9F2C4', '#E8D9C9'];
+  // Problem text: faint red with a red underline, so it cannot be mistaken for a keyword colour.
+  const ISSUE_STYLE = 'background:#FFE3E3;box-shadow:inset 0 -2px 0 #E5484D;border-radius:2px';
 
   // ---------- Research List ----------
   async function loadResearchOptions() {
@@ -138,8 +141,82 @@
     const text = B.blocksToText(B.extractBlocks($('#rdContent')));
     const words = B.wordCount(text);
     list.forEach((k) => { k.count = countIn(text, k.pat); });
-    const html = highlight(safeRoot($('#rdContent').innerHTML), list);
-    return { list, words, html };
+    return { list, words, html: '' };
+  }
+
+  // ---------- problem locations (faint red) ----------
+  // Every issue that quotes the content, in one list. The position in this list is the issue's highlight number.
+  function issueItems(r) {
+    const rv = r.review || {};
+    const f = r.facts || {};
+    return [].concat(rv.consistency || [], rv.language || [], rv.structure || [], f.issues || [])
+      .filter((x) => x && String(x.quote || '').trim().length >= 3);
+  }
+
+  function normQuote(s) { return String(s || '').replace(/[\s\u00a0]+/g, ' ').trim(); }
+
+  // The quote as a search pattern: any amount of white space between words, whole words at both ends.
+  function quotePattern(q) {
+    const words = normQuote(String(q || '').replace(/\u2026/g, ' ').replace(/\.{3,}/g, ' ')).replace(/^["'\u201c\u2018]+|["'\u201d\u2019]+$/g, '').split(' ').filter(Boolean);
+    if (!words.length) return '';
+    return (/^[A-Za-z0-9]/.test(words[0]) ? '(?<![A-Za-z0-9])' : '') + words.map(reEscape).join('[\\s\\u00a0]+') +
+      (/[A-Za-z0-9]$/.test(words[words.length - 1]) ? '(?![A-Za-z0-9])' : '');
+  }
+
+  function wrapMatches(root, pat, idx, title) {
+    if (!pat) return 0;
+    let re;
+    try { re = new RegExp(pat, 'gi'); } catch (e) { return 0; }
+    const doc = root.ownerDocument;
+    const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    const nodes = [];
+    let n;
+    while ((n = walker.nextNode())) nodes.push(n);
+    let count = 0;
+    nodes.forEach((node) => {
+      if (count >= 6) return;
+      if (node.parentElement && node.parentElement.closest('[data-iq]')) return;
+      const text = node.nodeValue;
+      if (!text || !text.trim()) return;
+      re.lastIndex = 0;
+      const frag = doc.createDocumentFragment();
+      let last = 0;
+      let hit = false;
+      let m;
+      while (count < 6 && (m = re.exec(text))) {
+        if (!m[0]) { re.lastIndex++; continue; }
+        hit = true;
+        count++;
+        if (m.index > last) frag.appendChild(doc.createTextNode(text.slice(last, m.index)));
+        const span = doc.createElement('span');
+        span.textContent = m[0];
+        span.setAttribute('data-iq', String(idx));
+        span.setAttribute('title', title);
+        span.setAttribute('style', ISSUE_STYLE);
+        frag.appendChild(span);
+        last = m.index + m[0].length;
+      }
+      if (!hit) return;
+      if (last < text.length) frag.appendChild(doc.createTextNode(text.slice(last)));
+      node.parentNode.replaceChild(frag, node);
+    });
+    return count;
+  }
+
+  // Shades the quoted text of each issue. A long quote that is not found whole (for example because a link sits
+  // inside it) is located by its opening words instead.
+  function markIssues(root, items) {
+    items.forEach((it, idx) => {
+      const q = normQuote(it.quote);
+      const title = (it.severity ? it.severity.toUpperCase() + ': ' : '') + it.problem;
+      let n = wrapMatches(root, quotePattern(q), idx, title);
+      if (!n && q.length > 60) {
+        const head = q.slice(0, 50).replace(/\s+\S*$/, '');
+        if (head.length > 20) n = wrapMatches(root, quotePattern(head), idx, title);
+      }
+      it.located = n > 0;
+    });
+    return root;
   }
 
   // ---------- rendering ----------
@@ -149,10 +226,17 @@
     return '<span style="background:' + color + ';width:' + size + 'px;height:' + size + 'px;border-radius:3px;display:inline-block;border:1px solid #C3D4DE;vertical-align:middle"></span>';
   }
 
+  function contentHtml() {
+    const r = S.rd;
+    const marked = (r.issueItems || []).filter((x) => x.located).length;
+    return (r.review || r.facts ? '<p class="hint"><span style="' + ISSUE_STYLE + ';padding:0 4px">Faint red</span> marks the text of a problem found below (' + marked + ' located). Hover over it to read the problem, or click an issue in the lists below to jump to it.</p>' : '') +
+      '<div id="rdHighlight" class="kr-preview" style="max-height:640px">' + r.kw.html + '</div>';
+  }
+
   function keywordHtml() {
     const K = S.rd && S.rd.kw;
     if (!K) return '';
-    if (!K.list.length) return '<p class="hint">Enter the primary and secondary keywords (or pick a report from the Research List) to see them highlighted.</p>';
+    if (!K.list.length) return '<p class="hint">Enter the primary and secondary keywords (or pick a report from the Research List) to see them highlighted.</p>' + contentHtml();
     const tips = (S.rd.review && S.rd.review.keywordTips) || [];
     const p = K.list.find((k) => k.primary);
     const density = p && K.words ? Math.round((p.count * p.kw.split(/\s+/).length / K.words) * 10000) / 100 : 0;
@@ -172,15 +256,17 @@
           '<td class="small">' + (k.count ? '' : '<span class="tag bad">Not used</span>' + (tip ? ' ' + esc(tip.suggestion) : '')) + '</td></tr>';
       }).join('') + '</tbody></table></div>';
     html += '<p class="hint">Counts include uses inside a longer keyword (for example the primary inside "… market size"); where keywords overlap, the highlight shows the longer one. Click a keyword above to jump through its uses.</p>';
-    html += '<div id="rdHighlight" class="kr-preview" style="max-height:640px">' + K.html + '</div>';
-    return html;
+    return html + contentHtml();
   }
 
   function renderRd() {
     const r = S.rd;
     if (!r) return;
     const rv = r.review || {};
-    let html = card('Keyword usage', keywordHtml());
+    // The content view is rebuilt on every render: problem text first (faint red), then the keyword colours.
+    r.issueItems = issueItems(r);
+    if (r.kw) r.kw.html = highlight(markIssues(safeRoot(r.srcHtml || ''), r.issueItems), r.kw.list);
+    let html = card('Keyword usage and problem locations', keywordHtml());
     if (r.review) {
       html += card('Data consistency', KR.issuesHtml(rv.consistency, 'No data inconsistencies found.'));
       html += card('Language and style', KR.issuesHtml(rv.language, 'No language issues found.'));
@@ -200,7 +286,18 @@
     $('#rdResults').innerHTML = html;
   }
 
-  // Scrolls the highlighted content to the next use of keyword i and outlines it briefly.
+  // Scrolls the content view to an element inside it and outlines it briefly.
+  function showInContent(el) {
+    const box = $('#rdHighlight');
+    if (!box || !el) return;
+    box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    const delta = el.getBoundingClientRect().top - box.getBoundingClientRect().top;
+    box.scrollTop += delta - box.clientHeight / 3;
+    el.style.outline = '2px solid #232323';
+    setTimeout(() => { el.style.outline = ''; }, 1500);
+  }
+
+  // Jumps to the next use of keyword i.
   function jumpTo(i) {
     const box = $('#rdHighlight');
     if (!box) return;
@@ -209,12 +306,18 @@
     S.rd.jump = S.rd.jump || {};
     const next = ((S.rd.jump[i] === undefined ? -1 : S.rd.jump[i]) + 1) % marks.length;
     S.rd.jump[i] = next;
-    const el = marks[next];
-    box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-    const delta = el.getBoundingClientRect().top - box.getBoundingClientRect().top;
-    box.scrollTop += delta - box.clientHeight / 3;
-    el.style.outline = '2px solid #232323';
-    setTimeout(() => { el.style.outline = ''; }, 1200);
+    showInContent(marks[next]);
+  }
+
+  // Jumps to the faint-red text of the issue whose quote was clicked.
+  function jumpToIssue(quote) {
+    const box = $('#rdHighlight');
+    if (!box || !S.rd) return;
+    const q = normQuote(quote);
+    const idx = (S.rd.issueItems || []).findIndex((it) => normQuote(it.quote) === q);
+    const el = idx >= 0 ? $('[data-iq="' + idx + '"]', box) : null;
+    if (!el) { KR.toast('This text could not be located in the content (the quote is reworded, or it describes something missing).'); return; }
+    showInContent(el);
   }
 
   // ---------- saved results (so an unchanged RD is not paid for twice) ----------
@@ -261,7 +364,7 @@
       KR.busy(btn, true, 'Verifying…');
       $('#rdSave').disabled = true;
 
-      const res = S.rd = { reportName, primary, secondaries, content, links, words: B.wordCount(content), kw: null, review: null, facts: null, linkStatus: null };
+      const res = S.rd = { reportName, primary, secondaries, content, links, words: B.wordCount(content), srcHtml: $('#rdContent').innerHTML, kw: null, review: null, facts: null, linkStatus: null };
       res.kw = analyseKeywords(primary, secondaries);
       prog.info('Keywords highlighted: ' + res.kw.list.filter((k) => k.count > 0).length + ' of ' + res.kw.list.length + ' used');
       renderRd();
@@ -375,7 +478,11 @@
     $('#rdSave').addEventListener('click', saveRd);
     $('#rdResults').addEventListener('click', (e) => {
       const b = e.target.closest('[data-kjump]');
-      if (b) jumpTo(Number(b.getAttribute('data-kjump')));
+      if (b) { jumpTo(Number(b.getAttribute('data-kjump'))); return; }
+      if (e.target.closest('a,button,#rdHighlight')) return;
+      const iss = e.target.closest('.issue');
+      const q = iss ? iss.querySelector('.quote') : null;
+      if (q) jumpToIssue(q.textContent);
     });
     const rep = $('#setRepair');
     if (rep) rep.addEventListener('click', (e) => repairRows(e.currentTarget));
