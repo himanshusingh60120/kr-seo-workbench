@@ -1,0 +1,10 @@
+{
+  "name": "kr-seo-workbench",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Kings Research SEO Workbench: keyword research (Mangools + AI), analyst/manager approval, RD fact checks, DM optimization with interlinks, publish and live page QC, all logged to Google Sheets.",
+  "license": "UNLICENSED",
+  "dependencies": {
+    "cheerio": "1.0.0"
+  }
+}

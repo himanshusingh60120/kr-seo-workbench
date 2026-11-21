@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SEO Workbench · Kings Research</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&family=Roboto+Mono:wght@400&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <img class="brand-logo" src="https://www.kingsresearch.com/assets/images/kr_logo.svg" alt="Kings Research" onerror="this.style.display='none';document.getElementById('brandFallback').style.display='flex';">
+    <div id="brandFallback" class="brand-fallback">KR</div>
+    <div class="brand-text">
+      <div class="brand-title">SEO Workbench</div>
+      <div class="brand-tag">New World. New Insights. New Growth.</div>
+    </div>
+  </div>
+  <div class="top-actions">
+    <label class="who"><span>You</span><input id="userName" type="text" placeholder="Your name" autocomplete="name"></label>
+    <button id="btnSettings" class="btn ghost" type="button">Setup</button>
+  </div>
+</header>
+
+<nav class="tabs" id="mainTabs">
+  <button type="button" data-tab="keywords" class="active"><span class="ico" data-icon="search"></span>Keywords</button>
+  <button type="button" data-tab="rd"><span class="ico" data-icon="doc"></span>RD</button>
+  <button type="button" data-tab="content"><span class="ico" data-icon="edit"></span>Content</button>
+  <button type="button" data-tab="dm"><span class="ico" data-icon="link"></span>DM</button>
+  <button type="button" data-tab="publish"><span class="ico" data-icon="check"></span>Publish Check</button>
+  <button type="button" data-tab="live"><span class="ico" data-icon="stats"></span>Live Tracker</button>
+</nav>
+
+<main>
+
+<!-- ===================== KEYWORDS ===================== -->
+<section id="tab-keywords" class="tab active">
+  <div class="subtabs" data-group="kw">
+    <button type="button" data-sub="kw-research" class="active">1 · Research</button>
+    <button type="button" data-sub="kw-verify">2 · Analyst verification</button>
+    <button type="button" data-sub="kw-approve">3 · Manager approval</button>
+    <button type="button" data-sub="kw-list">Research List</button>
+  </div>
+
+  <div id="kw-research" class="sub active">
+    <div class="card">
+      <h2>Keyword research</h2>
+      <p class="lead">Mangools KWFinder + SERPChecker, competitor pages and AI selection of primary and secondary keywords.</p>
+      <div class="grid3">
+        <label>Report name<input id="kwReport" type="text" placeholder="Genetic Engineering Market"></label>
+        <label>Seed keyword<input id="kwSeed" type="text" placeholder="genetic engineering market"></label>
+        <label>Location
+          <select id="kwLocation">
+            <option value="0">Global</option>
+            <option value="2840">United States</option>
+            <option value="2826">United Kingdom</option>
+            <option value="2356">India</option>
+            <option value="2124">Canada</option>
+            <option value="2036">Australia</option>
+            <option value="2276">Germany</option>
+            <option value="2784">United Arab Emirates</option>
+          </select>
+        </label>
+      </div>
+      <div class="grid2">
+        <label>Competitor pages to mine from the SERP
+          <select id="kwDepth">
+            <option value="0">None</option>
+            <option value="2">Top 2</option>
+            <option value="3" selected>Top 3</option>
+            <option value="5">Top 5</option>
+          </select>
+        </label>
+        <label>Extra competitor page URLs (optional, one per line)<textarea id="kwCompUrls" rows="2" placeholder="https://www.marketsandmarkets.com/Market-Reports/..."></textarea></label>
+      </div>
+      <div class="row">
+        <button id="kwRun" class="btn primary" type="button">Run keyword research</button>
+        <span class="hint">Mangools allows about 3 calls per 30 seconds, so mining competitor pages takes a minute or two.</span>
+      </div>
+      <div id="kwProgress" class="progress"></div>
+    </div>
+    <div id="kwSerp" class="card hidden"></div>
+    <div id="kwResults" class="card hidden"></div>
+  </div>
+
+  <div id="kw-verify" class="sub">
+    <div class="card">
+      <h2>Analyst verification</h2>
+      <p class="lead">Mark each keyword Good or Not good and give the reason it suits, or does not suit, our page. The AI reason is pre-filled for you to edit.</p>
+      <div class="row"><select id="kvGroup" class="grow"></select><button id="kvRefresh" class="btn" type="button">Refresh</button></div>
+      <div id="kvTable"></div>
+    </div>
+  </div>
+
+  <div id="kw-approve" class="sub">
+    <div class="card">
+      <h2>Manager approval</h2>
+      <p class="lead">Approved keywords move to the Research List with the approval date.</p>
+      <div class="grid3">
+        <label>Manager email<input id="kaEmail" type="email" placeholder="habi@kingsresearch.com"></label>
+        <label>Manager PIN<input id="kaPin" type="password" autocomplete="current-password"></label>
+        <div class="row end"><button id="kaRefresh" class="btn" type="button">Refresh</button></div>
+      </div>
+      <div id="kaList"></div>
+    </div>
+  </div>
+
+  <div id="kw-list" class="sub">
+    <div class="card">
+      <h2>Research List</h2>
+      <p class="lead">Approved keywords, live status from the sitemap, and the latest live check.</p>
+      <div class="row"><button id="klRefresh" class="btn" type="button">Refresh</button></div>
+      <div id="klTable"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== RD ===================== -->
+<section id="tab-rd" class="tab">
+  <div class="card">
+    <h2>RD verification</h2>
+    <p class="lead">Paste your written RD to check keyword coverage, data consistency, grammar and facts, and to get external link suggestions with anchor texts.</p>
+    <div class="grid2">
+      <label>Report from the Research List<select id="rdReport"><option value="">Select an approved report</option></select></label>
+      <label>Report name<input id="rdName" type="text" placeholder="Genetic Engineering Market"></label>
+    </div>
+    <div class="grid2">
+      <label>Primary keyword<input id="rdPrimary" type="text"></label>
+      <label>Secondary keywords (one per line or comma separated)<textarea id="rdSecondary" rows="3"></textarea></label>
+    </div>
+    <div class="paste-head"><span>Written content</span><span class="paste-stats" id="rdStats"></span><button id="rdClear" class="btn tiny ghost" type="button">Clear</button></div>
+    <div id="rdContent" class="paste" contenteditable="true" data-placeholder="Paste the RD here, straight from Google Docs or Word so the hyperlinks are kept."></div>
+    <div class="row">
+      <button id="rdRun" class="btn primary" type="button">Verify content</button>
+      <label class="chk"><input type="checkbox" id="rdWeb" checked> Verify facts on the web</label>
+      <span class="grow"></span>
+      <button id="rdSave" class="btn" type="button" disabled>Save to RD sheet</button>
+    </div>
+    <div id="rdProgress" class="progress"></div>
+  </div>
+  <div id="rdResults"></div>
+</section>
+
+<!-- ===================== CONTENT ===================== -->
+<section id="tab-content" class="tab">
+  <div class="card empty-state">
+    <span class="ico big" data-icon="edit"></span>
+    <h2>Content</h2>
+    <p class="lead">This workspace is reserved for the Content team. The "Content" tab in the Google Sheet is ready for it.</p>
+  </div>
+</section>
+
+<!-- ===================== DM ===================== -->
+<section id="tab-dm" class="tab">
+  <div class="card">
+    <h2>DM optimization</h2>
+    <p class="lead">Adds H-tags, internal links from the live sitemaps and the infographic with its alt text, then gives you the meta title and meta description to paste into the CMS.</p>
+    <label>Keyword this content is about<input id="dmKeyword" type="text" placeholder="Genetic Engineering Market"></label>
+    <div class="subtabs" data-group="dm">
+      <button type="button" data-sub="dm-editor" class="active">1 · Content</button>
+      <button type="button" data-sub="dm-preview">2 · Preview</button>
+      <button type="button" data-sub="dm-source">3 · CMS boxes</button>
+    </div>
+
+    <div id="dm-editor" class="sub active">
+      <div class="paste-head"><span>Paste content</span><span class="paste-stats" id="dmStats"></span><button id="dmClear" class="btn tiny ghost" type="button">Clear</button></div>
+      <div id="dmContent" class="paste" contenteditable="true" data-placeholder="Paste the full RD here (from Google Docs or Word to keep links, lists and the segmentation table)."></div>
+      <div class="grid2">
+        <label>Infographic image URL (.jpg or .webp)<input id="dmImage" type="url" placeholder="https://app.kingsresearch.com/uploads/media/....jpg"></label>
+        <label>Internal links to add
+          <select id="dmCount">
+            <option value="4">4</option>
+            <option value="6" selected>6</option>
+            <option value="8">8</option>
+            <option value="10">10</option>
+            <option value="12">12</option>
+          </select>
+        </label>
+      </div>
+      <div class="row">
+        <label class="chk"><input type="checkbox" id="dmStdImgs" checked> Add the standard Research Methodology and Why Kings Research images</label>
+      </div>
+      <div class="row">
+        <button id="dmOptimize" class="btn primary" type="button">Optimize</button>
+        <span class="hint">You can drag the infographic to a new position in Preview.</span>
+      </div>
+      <div id="dmProgress" class="progress"></div>
+      <div id="dmLinksTable"></div>
+    </div>
+
+    <div id="dm-preview" class="sub">
+      <p class="hint">Drag the infographic, or use the arrows on it, to change where it sits. Links open in a new tab.</p>
+      <div id="dmPreview" class="kr-preview"><p class="hint">Run Optimize first.</p></div>
+    </div>
+
+    <div id="dm-source" class="sub">
+      <p class="lead">Copy each box into the matching field in the CMS.</p>
+
+      <div class="group">
+        <div class="paste-head"><span><b>Meta Title</b> <span class="count" id="dmTitleCount"></span></span><button id="dmCopyTitle" class="btn tiny primary" type="button">Copy meta title</button></div>
+        <input id="dmMetaTitle" type="text" spellcheck="true">
+      </div>
+
+      <div class="group">
+        <div class="paste-head"><span><b>Meta Description</b> <span class="count" id="dmDescCount"></span></span><button id="dmCopyDesc" class="btn tiny primary" type="button">Copy meta description</button></div>
+        <textarea id="dmMetaDesc" rows="3" spellcheck="true"></textarea>
+      </div>
+
+      <div class="row"><button id="dmMetaAi" class="btn tiny ghost" type="button">More title and description options (AI)</button></div>
+      <div id="dmMetaSuggest"></div>
+
+      <div class="group">
+        <div class="paste-head"><span><b>Description: HTML source code</b></span><button id="dmCopyHtml" class="btn tiny primary" type="button">Copy HTML</button></div>
+        <p class="hint" id="dmAltNote"></p>
+        <textarea id="dmSource" class="code" rows="22" readonly spellcheck="false"></textarea>
+      </div>
+
+      <div class="row"><span class="grow"></span><button id="dmSave" class="btn" type="button">Save to DM sheet</button></div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== PUBLISH CHECK ===================== -->
+<section id="tab-publish" class="tab">
+  <div class="card">
+    <h2>Publish check</h2>
+    <p class="lead">Checks the preview page before it goes live: facts, data consistency, FAQs, infographic, spelling and grammar, meta, links, Report Snapshot and Table of Contents.</p>
+    <label>Preview URL<input id="pcUrl" type="url" placeholder="https://www.kingsresearch.com/preview/report/digital-provenance-market-3188"></label>
+    <div class="row">
+      <button id="pcRun" class="btn primary" type="button">Run publish check</button>
+      <label class="chk"><input type="checkbox" id="pcWeb" checked> Verify facts on the web</label>
+    </div>
+    <div id="pcProgress" class="progress"></div>
+  </div>
+  <div id="pcResults"></div>
+</section>
+
+<!-- ===================== LIVE TRACKER ===================== -->
+<section id="tab-live" class="tab">
+  <div class="card">
+    <h2>Live tracker</h2>
+    <p class="lead">Sync the reports sitemap to see which approved reports are live and when they went live, then run the live check.</p>
+    <div class="row">
+      <button id="lvSync" class="btn primary" type="button">Sync reports sitemap</button>
+      <button id="lvRefresh" class="btn" type="button">Refresh list</button>
+      <button id="lvCheckAll" class="btn" type="button">Check all live reports not yet checked</button>
+    </div>
+    <div id="lvSyncResult" class="note hidden"></div>
+    <div id="lvTable"></div>
+  </div>
+  <div class="card">
+    <h2>Check any live URL</h2>
+    <label>Live URL<input id="lvUrl" type="url" placeholder="https://www.kingsresearch.com/report/..."></label>
+    <div class="row">
+      <button id="lvRun" class="btn primary" type="button">Run live check</button>
+      <label class="chk"><input type="checkbox" id="lvWeb" checked> Verify facts on the web</label>
+    </div>
+    <div id="lvProgress" class="progress"></div>
+  </div>
+  <div id="lvResults"></div>
+</section>
+
+</main>
+
+<footer class="foot">Kings Research · SEO Workbench · Explore. Elevate.</footer>
+
+<div id="toast"></div>
+
+<dialog id="settingsDlg">
+  <div class="dlg-head"><h2>Setup</h2><button type="button" class="btn tiny ghost" id="setClose">Close</button></div>
+  <p id="setMsg" class="note hidden"></p>
+  <label>Team access key <span class="hint">(only if your admin set one)</span><input id="setKey" type="password"></label>
+  <div class="row"><button id="setSaveKey" class="btn" type="button">Save key</button><button id="setInit" class="btn primary" type="button">Create / repair sheet tabs</button></div>
+  <div id="setStatus"></div>
+</dialog>
+
+<script src="/js/core.js"></script>
+<script src="/js/blocks.js"></script>
+<script src="/js/checks-ui.js"></script>
+<script src="/js/keywords.js"></script>
+<script src="/js/rd.js"></script>
+<script src="/js/dm.js"></script>
+<script src="/js/live.js"></script>
+<script src="/js/main.js"></script>
+</body>
+</html>
