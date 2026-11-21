@@ -1,12 +1,12 @@
 'use strict';
 /* DM tab: structure pasted content into the Kings Research report HTML format (H2/H3, segmentation table,
-   lists), add internal links (KR-Interlinker logic), place a draggable infographic whose alt text lives in the
-   HTML, and produce the CMS boxes: meta title, meta description and the HTML source code. */
+   lists), add internal links (KR-Interlinker logic), place one or more draggable images (alt text only inside
+   each image's HTML alt attribute), and produce the CMS boxes: meta title, meta description and HTML source. */
 (function () {
   const KR = window.KR;
   const { $, $$, esc } = KR;
   const B = KR.blocks;
-  const D = (KR.state.dm = { units: [], links: [], img: null, imgPos: 0, keyword: '', period: '2026-2033' });
+  const D = (KR.state.dm = { units: [], links: [], imgs: [], keyword: '', period: '2026-2033' });
 
   const MONTHS = 'January|February|March|April|May|June|July|August|September|October|November|December';
   const H2_SET = ['market overview', 'key market highlights', 'market dynamics', 'market segmentation', 'segmental analysis', 'regional analysis', 'competitive landscape', 'research methodology', 'frequently asked questions'];
@@ -163,12 +163,75 @@
     return units;
   }
 
-  function defaultImgPos(units) {
-    const first = units.findIndex((u) => u.type === 'h2');
-    const next = units.findIndex((u, i) => i > first && u.type === 'h2');
-    if (first >= 0 && next > 0) return next;
-    const p = units.findIndex((u) => u.type === 'p');
-    return p >= 0 ? p + 1 : units.length;
+  // Image k (0 = infographic) goes just before the (k+2)-th H2: the first after the Overview, the next after the
+  // following section, and so on. Without headings, the first image goes after the first paragraph.
+  function defaultPositions(units, n) {
+    const h2 = [];
+    units.forEach((u, i) => { if (u.type === 'h2') h2.push(i); });
+    const out = [];
+    for (let k = 0; k < n; k++) {
+      if (h2[k + 1] !== undefined) out.push(h2[k + 1]);
+      else if (k === 0 && h2.length < 2) {
+        const p = units.findIndex((u) => u.type === 'p');
+        out.push(p >= 0 ? p + 1 : units.length);
+      } else out.push(units.length);
+    }
+    return out;
+  }
+
+  // ---------- image inputs ----------
+  function imageRowHtml(n) {
+    return '<div class="paste-head"><span><b>Image ' + n + '</b>' + (n === 1 ? ' <span class="hint">(infographic)</span>' : '') + '</span><button type="button" class="btn tiny ghost dm-img-del">Remove</button></div>' +
+      '<div class="grid2"><label>Image URL (.jpg or .webp)<input class="dm-img-url" type="url" placeholder="https://app.kingsresearch.com/uploads/media/....jpg"></label>' +
+      '<label>Alt text <span class="hint">(leave empty for automatic)</span><input class="dm-img-alt" type="text"></label></div>';
+  }
+
+  function addImageRow() {
+    const box = $('#dmImages');
+    const row = document.createElement('div');
+    row.className = 'group dm-img-row';
+    row.innerHTML = imageRowHtml($$('.dm-img-row', box).length + 1);
+    box.appendChild(row);
+    renumberRows();
+    return row;
+  }
+
+  function renumberRows() {
+    $$('#dmImages .dm-img-row').forEach((row, i) => {
+      const b = $('.paste-head b', row);
+      if (b) b.textContent = 'Image ' + (i + 1);
+      const hint = $('.paste-head .hint', row);
+      if (i === 0 && !hint) $('.paste-head span', row).insertAdjacentHTML('beforeend', ' <span class="hint">(infographic)</span>');
+      if (i > 0 && hint) hint.remove();
+    });
+  }
+
+  function readImageInputs() {
+    return $$('#dmImages .dm-img-row').map((row) => ({ url: $('.dm-img-url', row).value.trim(), alt: $('.dm-img-alt', row).value.trim() })).filter((x) => x.url);
+  }
+
+  function altFromUrl(url) {
+    let name = '';
+    try { name = decodeURIComponent(new URL(url).pathname.split('/').pop() || ''); } catch (e) { name = ''; }
+    name = name.replace(/\.[a-z0-9]+$/i, '').replace(/^\d{6,}[-_]?/, '').replace(/[-_]+/g, ' ').trim();
+    return name ? KR.titleCase(name) : '';
+  }
+
+  function defaultAlt(k, url) {
+    if (k === 0) return D.keyword + ' Size & Share, By Revenue, ' + D.period;
+    const fromName = altFromUrl(url);
+    return fromName || (D.keyword + ' ' + (k + 1));
+  }
+
+  // Alt text edits after Optimize are applied straight to the HTML.
+  function syncAlts() {
+    if (!D.units.length || !D.imgs.length) return;
+    const inputs = readImageInputs();
+    D.imgs.forEach((im, k) => {
+      const inp = inputs[k];
+      if (inp && inp.url === im.src) im.alt = inp.alt || defaultAlt(k, im.src);
+    });
+    renderDm();
   }
 
   // ---------- interlinks ----------
@@ -283,30 +346,55 @@
     }
   }
 
+  function imagesAt(pos, total) {
+    const out = [];
+    D.imgs.forEach((im, k) => {
+      const p = Math.max(0, Math.min(total, im.pos));
+      if (p === pos) out.push({ im, k });
+    });
+    return out;
+  }
+
   function buildSource() {
     if (!D.units.length) return '';
     const units = applyLinks(D.units, D.links).units;
     const parts = [];
-    const img = D.img ? imgTag(D.img.src, D.img.alt, D.img.w, D.img.h) : '';
-    units.forEach((u, i) => { if (img && i === D.imgPos) parts.push(img); parts.push(unitHtml(u)); });
-    if (img && D.imgPos >= units.length) parts.push(img);
+    units.forEach((u, i) => {
+      imagesAt(i, units.length).forEach((x) => parts.push(imgTag(x.im.src, x.im.alt, x.im.w, x.im.h)));
+      parts.push(unitHtml(u));
+    });
+    imagesAt(units.length, units.length).forEach((x) => parts.push(imgTag(x.im.src, x.im.alt, x.im.w, x.im.h)));
     return parts.join('\n');
+  }
+
+  function previewImg(im, k) {
+    return '<div class="pv-img" draggable="true" data-img="' + k + '" title="Drag to move"><div class="pv-img-bar"><span>Image ' + (k + 1) + (k === 0 ? ' (infographic)' : '') + ': drag to move</span>' +
+      '<button type="button" data-mv="-1" data-img="' + k + '" title="Move up">&#9650;</button><button type="button" data-mv="1" data-img="' + k + '" title="Move down">&#9660;</button></div>' +
+      '<img src="' + esc(im.src) + '" alt="' + esc(im.alt) + '"></div>';
   }
 
   function renderPreview() {
     const box = $('#dmPreview');
     if (!D.units.length) { box.innerHTML = '<p class="hint">Run Optimize first.</p>'; return; }
     const units = applyLinks(D.units, D.links).units;
-    const imgEl = D.img ? '<div class="pv-img" draggable="true" title="Drag to move"><div class="pv-img-bar"><span>Infographic: drag to move</span><button type="button" data-mv="-1" title="Move up">&#9650;</button><button type="button" data-mv="1" title="Move down">&#9660;</button></div><img src="' + esc(D.img.src) + '" alt="' + esc(D.img.alt) + '"></div>' : '';
     let html = '';
     units.forEach((u, i) => {
-      if (i === D.imgPos) html += imgEl;
+      imagesAt(i, units.length).forEach((x) => { html += previewImg(x.im, x.k); });
       html += '<div class="pv-unit" data-i="' + i + '">' + unitHtml(u) + '</div>';
     });
-    if (D.imgPos >= units.length) html += imgEl;
-    html += '<div class="pv-end" data-i="' + units.length + '">Drop here to place the infographic at the end</div>';
+    imagesAt(units.length, units.length).forEach((x) => { html += previewImg(x.im, x.k); });
+    html += '<div class="pv-end" data-i="' + units.length + '">Drop here to place an image at the end</div>';
     box.innerHTML = html;
-    $$('.pv-unit img', box).forEach((im) => im.setAttribute('draggable', 'false'));
+    // A broken image shows a clear note instead of its alt text, so alt text never appears as page text in the preview.
+    $$('img', box).forEach((im) => {
+      im.setAttribute('draggable', 'false');
+      im.addEventListener('error', () => {
+        const note = document.createElement('div');
+        note.className = 'note';
+        note.textContent = 'This image could not be loaded. Check the URL: ' + im.getAttribute('src');
+        im.replaceWith(note);
+      });
+    });
   }
 
   function renderLinksTable() {
@@ -336,7 +424,6 @@
     renderLinksTable();
     renderPreview();
     $('#dmSource').value = buildSource();
-    $('#dmAltNote').textContent = D.img ? 'The infographic alt text is already in the HTML: "' + D.img.alt + '"' : (D.units.length ? 'No infographic URL was given, so the HTML has no infographic.' : '');
     updateCounters();
   }
 
@@ -378,6 +465,8 @@
       const keyword = KR.titleCase(kwRaw);
       const raw = B.extractBlocks($('#dmContent'));
       if (raw.length < 3) throw new Error('Paste the content first.');
+      const inputs = readImageInputs();
+      inputs.forEach((x) => { if (!/^https?:\/\//i.test(x.url)) throw new Error('Image URLs must start with https:// (' + x.url + ').'); });
       KR.busy(btn, true, 'Optimizing…');
       let s = prog.step('Structuring the content and adding H-tags…');
       const units = finalizeUnits(classify(raw, keyword), $('#dmStdImgs').checked);
@@ -391,20 +480,23 @@
       const yrs = overviewText().match(/\((\d{4})\s*[-\u2013\u2014]\s*(\d{4})\)/);
       D.period = yrs ? yrs[1] + '-' + yrs[2] : '2026-2033';
 
-      const imgUrl = $('#dmImage').value.trim();
-      if (imgUrl) {
-        if (!/^https?:\/\//i.test(imgUrl)) throw new Error('The image URL must start with https://');
-        s = prog.step('Loading the infographic…');
-        const dims = await imageSize(imgUrl);
-        const w = dims ? Math.min(1000, dims.w) : 0;
-        D.img = { src: imgUrl, alt: keyword + ' Size & Share, By Revenue, ' + D.period, w, h: dims && w ? Math.round(w * dims.h / dims.w) : 0 };
-        D.imgPos = defaultImgPos(units);
-        if (dims) s.done('Infographic loaded (' + dims.w + ' x ' + dims.h + ') and placed after the Overview');
-        else s.fail('The image did not load in the browser. Check the URL; it is still added to the HTML.');
-        if (!/\.(jpe?g|webp|png)(\?|$)/i.test(imgUrl)) prog.info('The image URL does not end in .jpg, .webp or .png. Make sure it is the infographic file.');
+      D.imgs = [];
+      if (inputs.length) {
+        s = prog.step('Loading ' + inputs.length + ' image' + (inputs.length === 1 ? '' : 's') + '…');
+        const dims = await Promise.all(inputs.map((x) => imageSize(x.url)));
+        const pos = defaultPositions(units, inputs.length);
+        const failed = [];
+        inputs.forEach((x, k) => {
+          const d = dims[k];
+          const w = d ? Math.min(1000, d.w) : 0;
+          D.imgs.push({ src: x.url, alt: x.alt || defaultAlt(k, x.url), w, h: d && w ? Math.round(w * d.h / d.w) : 0, pos: pos[k] });
+          if (!d) failed.push(x.url);
+          if (!/\.(jpe?g|webp|png)(\?|$)/i.test(x.url)) prog.info('Image ' + (k + 1) + ' does not end in .jpg, .webp or .png. Make sure it is an image file.');
+        });
+        if (failed.length) s.fail(failed.length + ' image(s) did not load in the browser (they are still added to the HTML): ' + failed.join(', '));
+        else s.done(inputs.length + ' image' + (inputs.length === 1 ? '' : 's') + ' placed (the first after the Overview). Drag them in Preview to move.');
       } else {
-        D.img = null;
-        prog.info('No image URL given, so no infographic was added.');
+        prog.info('No image URL given, so no images were added.');
       }
 
       s = prog.step('Loading the Kings Research sitemaps (reports, blogs, press releases)…');
@@ -442,7 +534,7 @@
       setMetaDefaults();
       renderDm();
       KR.showSub('dm', 'dm-preview');
-      KR.toast('Optimized. Move the infographic in Preview if needed, then open "CMS boxes" to copy the meta title, meta description and HTML.', 'ok');
+      KR.toast('Optimized. Move the images in Preview if needed, then open "CMS boxes" to copy the meta title, meta description and HTML.', 'ok');
     } catch (e) {
       prog.error(e.message);
       KR.toast(e.message, 'err');
@@ -451,19 +543,27 @@
     }
   }
 
+  function moveImage(k, pos) {
+    const im = D.imgs[k];
+    if (!im) return;
+    im.pos = Math.max(0, Math.min(D.units.length, pos));
+    renderDm();
+  }
+
   function initPreviewDnD() {
     const box = $('#dmPreview');
-    let dragging = false;
+    let dragIdx = -1;
     const clearDrop = () => $$('.drop-before, .drop-after', box).forEach((x) => x.classList.remove('drop-before', 'drop-after'));
     box.addEventListener('dragstart', (e) => {
-      if (!e.target.closest || !e.target.closest('.pv-img')) return;
-      dragging = true;
+      const blk = e.target.closest ? e.target.closest('.pv-img') : null;
+      if (!blk) return;
+      dragIdx = Number(blk.getAttribute('data-img'));
       e.dataTransfer.effectAllowed = 'move';
-      try { e.dataTransfer.setData('text/plain', 'kr-infographic'); } catch (err) { /* ignore */ }
+      try { e.dataTransfer.setData('text/plain', 'kr-image-' + dragIdx); } catch (err) { /* ignore */ }
     });
-    box.addEventListener('dragend', () => { dragging = false; clearDrop(); });
+    box.addEventListener('dragend', () => { dragIdx = -1; clearDrop(); });
     box.addEventListener('dragover', (e) => {
-      if (!dragging) return;
+      if (dragIdx < 0) return;
       const t = e.target.closest('.pv-unit, .pv-end');
       if (!t) return;
       e.preventDefault();
@@ -473,20 +573,24 @@
       t.classList.add(e.clientY < r.top + r.height / 2 ? 'drop-before' : 'drop-after');
     });
     box.addEventListener('drop', (e) => {
-      if (!dragging) return;
+      if (dragIdx < 0) return;
       const t = e.target.closest('.pv-unit, .pv-end');
       if (!t) return;
       e.preventDefault();
       let i = Number(t.dataset.i);
       if (t.classList.contains('drop-after')) i += 1;
-      dragging = false;
+      const k = dragIdx;
+      dragIdx = -1;
       clearDrop();
-      D.imgPos = Math.max(0, Math.min(D.units.length, i));
-      renderDm();
+      moveImage(k, i);
     });
     box.addEventListener('click', (e) => {
       const mv = e.target.closest('[data-mv]');
-      if (mv) { D.imgPos = Math.max(0, Math.min(D.units.length, D.imgPos + Number(mv.dataset.mv))); renderDm(); return; }
+      if (mv) {
+        const k = Number(mv.getAttribute('data-img'));
+        if (D.imgs[k]) moveImage(k, D.imgs[k].pos + Number(mv.getAttribute('data-mv')));
+        return;
+      }
       const a = e.target.closest('a[href]');
       if (a) { e.preventDefault(); window.open(a.getAttribute('href'), '_blank', 'noopener'); }
     });
@@ -517,8 +621,8 @@
       await KR.api('dm', 'save', {
         user,
         keyword: D.keyword,
-        image: D.img ? D.img.src : '',
-        alt: D.img ? D.img.alt : '',
+        image: D.imgs.map((im) => im.src).join('\n'),
+        alt: D.imgs.map((im) => im.alt).join('\n'),
         metaTitle: $('#dmMetaTitle').value.trim(),
         metaDescription: $('#dmMetaDesc').value.replace(/\s+/g, ' ').trim(),
         interlinks: applied.map((l) => l.anchor + ' -> ' + l.url).join('\n'),
@@ -537,6 +641,18 @@
   KR.initDm = () => {
     B.setupPaste($('#dmContent'), 'dmStats');
     $('#dmClear').addEventListener('click', () => B.clearPaste($('#dmContent')));
+    addImageRow();
+    $('#dmAddImg').addEventListener('click', () => { const row = addImageRow(); $('.dm-img-url', row).focus(); });
+    $('#dmImages').addEventListener('click', (e) => {
+      const del = e.target.closest('.dm-img-del');
+      if (!del) return;
+      const rows = $$('#dmImages .dm-img-row');
+      const row = del.closest('.dm-img-row');
+      if (rows.length <= 1) { $('.dm-img-url', row).value = ''; $('.dm-img-alt', row).value = ''; }
+      else row.remove();
+      renumberRows();
+    });
+    $('#dmImages').addEventListener('input', (e) => { if (e.target.classList.contains('dm-img-alt')) syncAlts(); });
     $('#dmOptimize').addEventListener('click', optimize);
     $('#dmLinksTable').addEventListener('change', (e) => {
       const i = e.target.dataset.li;

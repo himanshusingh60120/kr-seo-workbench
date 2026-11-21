@@ -2,6 +2,7 @@
 
 // Publish Check (preview URL) and Live Check (live URL): extract the page, run each check, save to the sheet.
 // The browser calls "extract" once, then each "check" kind in parallel (each fits in one function call), then "save".
+// Report Snapshot and Table of Contents are checked only in Live Check (the browser skips them for preview pages).
 
 const { handler, HttpError, nowIST, hostOf, isCompetitor } = require('../lib/http');
 const page = require('../lib/page');
@@ -19,6 +20,12 @@ function requirePage(pg) {
 function issue(severity, section, problem, fix, quote) {
   return { severity, section, quote: quote || '', problem, fix: fix || '' };
 }
+
+function lowerNorm(s) { return checks.norm(s).toLowerCase().replace(/\s+/g, ' ').trim(); }
+
+// Infographic: masked values (XX.X%) are intentional and numbers the content does not mention are fine.
+const IMAGE_SKIP_RE = /\b(?:font|bold|styl\w*|layout|clarity|clarif\w*|label\w*|unspecified|does not specify|not specified|placeholder\w*|masked)\b|\bnot (?:given|mentioned|stated|specified|included|present|provided|confirmed|verifiable) in the description\b|\bnot in the description\b|\bcannot be verified\b|\bnot verifiable\b|\b[x]{1,3}(?:[.,][x]{1,3})?\s?%|\$\s?x{1,3}/i;
+const TOC_SKIP_RE = /compan(?:y|ies)|key players?|table of contents?["'\s]*(?:heading|label|title)|["']table of content["']/i;
 
 const KINDS = {
   async data(pg) {
@@ -43,7 +50,13 @@ const KINDS = {
       });
     }
     const out = await ai.chatJSON({ system: P.qcSystem(), user: P.faqTask(pg, companies) });
-    return checks.result(issues.concat(checks.normIssues(out.issues, 'FAQs')), { companies, faqCount: faqs.length });
+    const desc = lowerNorm(pg.descriptionText);
+    // An FAQ answer that repeats the description word for word cannot contradict it.
+    const ai2 = checks.normIssues(out.issues, 'FAQs').filter((x) => {
+      const q = lowerNorm(x.quote);
+      return !(q.length > 40 && desc.indexOf(q.slice(0, 220)) >= 0 && /conflict|mismatch|differ|instead|incorrect|inconsistent|contradict|mix/i.test(x.problem));
+    });
+    return checks.result(issues.concat(ai2), { companies, faqCount: faqs.length });
   },
 
   async language(pg) {
@@ -68,11 +81,12 @@ const KINDS = {
     const transcripts = [];
     for (const img of content.slice(0, 2)) {
       if (img.alt && h1 && img.alt.toLowerCase().indexOf(h1.toLowerCase()) < 0) issues.push(issue('warning', 'Image alt text', 'Alt text "' + img.alt + '" does not contain the market name "' + h1 + '".', 'Use "' + h1 + ' Size & Share, By Revenue, ' + (figures.period ? figures.period.join('-') : '<forecast period>') + '".', img.alt));
-      if (img.alt && figures.period && img.alt.indexOf(String(figures.period[0])) < 0) issues.push(issue('check', 'Image alt text', 'Alt text does not mention the forecast period ' + figures.period.join('-') + '.', 'Add the forecast period to the alt text.', img.alt));
       try {
         const out = await ai.chatJSON({ system: P.qcSystem(), user: P.imageTask(pg, figures, img.alt), images: [img.src] });
         transcripts.push({ src: img.src, alt: img.alt, text: String(out.transcription || '') });
-        checks.normIssues(out.issues, 'Infographic').forEach((x) => issues.push(x));
+        checks.normIssues(out.issues, 'Infographic')
+          .filter((x) => !IMAGE_SKIP_RE.test(x.problem + ' ' + x.quote + ' ' + x.fix))
+          .forEach((x) => issues.push(Object.assign({}, x, { severity: x.severity === 'warning' ? 'check' : x.severity })));
       } catch (e) {
         issues.push(issue('check', 'Infographic', 'The image could not be read automatically (' + e.message + '): ' + img.src, 'Check the infographic manually.'));
       }
@@ -105,20 +119,18 @@ const KINDS = {
     if (!kw) add('error', 'No H1 found on the page.', 'Add the market name as the H1.');
     if (pg.h1Count > 1) add('warning', 'The page has ' + pg.h1Count + ' H1 tags.', 'Keep a single H1.');
     const headings = pg.headings || [];
-    if (!pg.descriptionFound) add('check', 'The description section could not be located precisely; heading checks may be incomplete.', 'Open the page to confirm the Overview heading exists.');
     const ov = headings.find((h) => /overview$/i.test(h.text));
-    if (!ov) add('warning', 'No "<Market> Overview" heading found in the description.', 'Add an H2 "' + kw + ' Overview".');
-    else {
+    if (pg.descriptionFound && !ov) add('warning', 'No "<Market> Overview" heading found in the description.', 'Add an H2 "' + kw + ' Overview".');
+    else if (ov) {
       if (ov.level !== 2) add('warning', 'The Overview heading is H' + ov.level + ', not H2.', 'Make "' + ov.text + '" an H2.', ov.text);
       if (kwl && ov.text.toLowerCase().indexOf(kwl) < 0) add('warning', 'Overview heading "' + ov.text + '" does not include the market name.', 'Rename it "' + kw + ' Overview".', ov.text);
     }
-    if (!headings.some((h) => h.level === 2)) add('error', 'The description has no H2 headings.', 'Use H2 for main sections and H3 for the questions.');
-    if (!headings.some((h) => h.level === 3)) add('warning', 'The description has no H3 headings.', 'Use H3 for the question headings under each section.');
+    if (pg.descriptionFound && !headings.some((h) => h.level === 2)) add('error', 'The description has no H2 headings.', 'Use H2 for main sections and H3 for the questions.');
+    if (pg.descriptionFound && !headings.some((h) => h.level === 3)) add('warning', 'The description has no H3 headings.', 'Use H3 for the question headings under each section.');
     if (!m.canonical) add('warning', 'Canonical tag is missing.', 'Add a canonical pointing to the live /report/ URL.');
     else if (/\/preview\//.test(m.canonical)) add('error', 'Canonical points to a preview URL: ' + m.canonical, 'The canonical must be the live /report/ URL.');
     if (!pg.preview && /noindex/i.test(m.robots || '')) add('error', 'Live page has robots "' + m.robots + '".', 'Remove noindex so the page can rank.');
     if (pg.faqsLdCount && (pg.faqs || []).length && pg.faqsLdCount !== pg.faqs.length) add('check', 'FAQ schema has ' + pg.faqsLdCount + ' questions but ' + pg.faqs.length + ' are visible.', 'Keep the FAQ schema in sync with the visible FAQs.');
-    if (!pg.faqsLdCount) add('check', 'No FAQPage structured data found.', 'Add FAQPage JSON-LD for the FAQs to qualify for rich results.');
     return checks.result(issues, { meta: m });
   },
 
@@ -137,7 +149,7 @@ const KINDS = {
       if (l.internal && /\/preview\//.test(l.href)) issues.push(issue('error', 'Links', 'Link points to a preview URL: ' + l.href, 'Link to the live page instead.', l.text));
       if (String(l.text || '').trim().length < 3) issues.push(issue('warning', 'Links', 'Anchor text "' + l.text + '" is too short (link: ' + l.href + ').', 'Put the link on a descriptive phrase, such as the organization name.', l.text));
       if (!r.ok) {
-        const blocked = [401, 403, 429, 999].indexOf(r.status) >= 0;
+        const blocked = [401, 403, 405, 429, 999].indexOf(r.status) >= 0;
         issues.push(issue(blocked ? 'check' : 'error', 'Links',
           blocked ? 'Link returned HTTP ' + r.status + ' (the site may block automated checks): ' + l.href : 'Broken link (' + (r.status || r.error || 'no response') + '): ' + l.href,
           blocked ? 'Open the link manually to confirm it works.' : 'Replace it with a working source URL.', l.text));
@@ -151,7 +163,7 @@ const KINDS = {
 
   async snapshot(pg) {
     const s = pg.snapshot || {};
-    if (!s.text) return checks.result([issue('error', 'Report Snapshot', 'The Report Snapshot tab could not be read' + (s.error ? ' (' + s.error + ')' : '') + (s.url ? ': ' + s.url : '') + '.', 'Open the Snapshot tab and confirm it loads and has content.')], { url: s.url || '' });
+    if (!s.text) return checks.result([issue('check', 'Report Snapshot', 'The Report Snapshot tab could not be read' + (s.error ? ' (' + s.error + ')' : '') + '.', 'Open the Snapshot tab and confirm it loads.')], { url: s.url || '' });
     const figures = checks.marketFigures(pg.descriptionText);
     const out = await ai.chatJSON({ system: P.qcSystem(), user: P.snapshotTask(pg, figures) });
     return checks.result(checks.normIssues(out.issues, 'Report Snapshot'), { url: s.url });
@@ -159,18 +171,11 @@ const KINDS = {
 
   async toc(pg) {
     const t = pg.toc || {};
-    if (!t.text) return checks.result([issue('error', 'Table of Contents', 'The Table of Contents tab could not be read' + (t.error ? ' (' + t.error + ')' : '') + (t.url ? ': ' + t.url : '') + '.', 'Open the TOC tab and confirm it loads and has content.')], { url: t.url || '' });
-    const issues = [];
-    const companies = checks.keyCompanies(pg.descriptionText);
-    const tocLower = checks.norm(t.text).toLowerCase();
-    if (!t.truncated) {
-      companies.forEach((c) => {
-        if (tocLower.indexOf(c.toLowerCase()) < 0) issues.push(issue('error', 'Table of Contents', '"' + c + '" is in the key companies list but not in the TOC Company Profiles (or is named differently).', 'Add "' + c + '" to Company Profiles with the identical name.', c));
-      });
-    }
+    if (!t.text) return checks.result([issue('check', 'Table of Contents', 'The Table of Contents tab could not be read' + (t.error ? ' (' + t.error + ')' : '') + '.', 'Open the TOC tab and confirm it loads.')], { url: t.url || '' });
     const figures = checks.marketFigures(pg.descriptionText);
-    const out = await ai.chatJSON({ system: P.qcSystem(), user: P.tocTask(pg, figures, companies) });
-    return checks.result(issues.concat(checks.normIssues(out.issues, 'Table of Contents')), { url: t.url });
+    const out = await ai.chatJSON({ system: P.qcSystem(), user: P.tocTask(pg, figures) });
+    const list = checks.normIssues(out.issues, 'Table of Contents').filter((x) => !TOC_SKIP_RE.test(x.problem + ' ' + x.quote));
+    return checks.result(list, { url: t.url });
   }
 };
 
@@ -181,9 +186,10 @@ const COLUMNS = {
 
 function summarize(r) {
   if (!r) return 'Not run';
+  if (r.status === 'Skipped') return r.note || 'Skipped';
   if (r.error) return 'ERROR: ' + r.error;
   const list = r.issues || [];
-  if (!list.length) return r.status === 'Skipped' ? 'Skipped' : 'OK';
+  if (!list.length) return 'OK';
   return list.map((x, i) => (i + 1) + '. [' + x.severity + '] ' + (x.section ? x.section + ': ' : '') + x.problem + (x.fix ? ' -> ' + x.fix : '') + (x.quote ? ' | "' + x.quote + '"' : '')).join('\n');
 }
 

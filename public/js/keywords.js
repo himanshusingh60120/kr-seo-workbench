@@ -1,11 +1,34 @@
 'use strict';
-/* Keywords tab: Mangools research + AI selection, analyst verification, manager approval, Research List. */
+/* Keywords tab: opportunity finder (competitor gap + reports sitemap -> New report / Revamp; the last saved scan
+   is reloaded from the Opportunities sheet; sortable by volume; more secondary keywords from the pages ranking in
+   Google's top 10), analyst verification (with the same suggestions), manager approval, Research List. */
 (function () {
   const KR = window.KR;
   const { $, $$, esc, fmtNum } = KR;
   const S = KR.state;
 
-  const GENERIC = new Set(['market', 'markets', 'industry', 'size', 'share', 'report', 'reports', 'global', 'analysis', 'trends', 'trend', 'forecast', 'growth', 'outlook', 'the', 'of', 'and', 'for', 'in', 'by', 'to', 'a']);
+  const PRI = { High: 0, Medium: 1, Low: 2 };
+
+  // ---------- helpers ----------
+  function shortUrl(u) { return String(u || '').replace(/^https?:\/\/(www\.)?/, ''); }
+  function link(u, label) { return u ? '<a href="' + esc(u) + '" target="_blank" rel="noopener">' + esc(label || shortUrl(u)) + '</a>' : ''; }
+  function actionHtml(action, url) {
+    const tag = action === 'Revamp' ? '<span class="tag comp">Revamp</span>' : '<span class="tag kr">New report</span>';
+    return tag + (url ? ' <span class="small">' + link(url) + '</span>' : '');
+  }
+  function compsText(t) {
+    return Object.keys(t.positions || {}).map((d) => d + (t.positions[d] ? ' #' + t.positions[d] : '')).join(', ');
+  }
+  function nv(v) { return v === null || v === undefined || v === '' || isNaN(Number(v)) ? -1 : Number(v); }
+  function bySv(a, b) { return nv(b.sv) - nv(a.sv); }
+  function locId(label) {
+    const opt = $$('#opLocation option').find((o) => o.textContent === label);
+    return opt ? Number(opt.value) : 0;
+  }
+  function freshOpp(extra) {
+    return Object.assign({ topics: [], loc: 0, locLabel: 'Global', sel: new Set(), sent: new Set(), open: new Set(), saved: null,
+      f: { q: '', st: '', pr: '', sort: '', hidePipe: false, hideIrr: true } }, extra || {});
+  }
 
   // ---------- Mangools pacing (3 calls / 30 s) ----------
   let lastMg = 0;
@@ -23,105 +46,147 @@
     }
   }
 
-  function coreTokens(seed) {
-    const words = String(seed).toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
-    const core = words.filter((w) => !GENERIC.has(w));
-    return (core.length ? core : words).map((w) => (w.length > 5 ? w.slice(0, w.length - 2) : w));
-  }
-
-  function relevance(kw, core) {
-    const toks = kw.split(/[^a-z0-9]+/).filter(Boolean);
-    let hit = 0;
-    core.forEach((c) => { if (toks.some((t) => t.indexOf(c) === 0)) hit++; });
-    return core.length ? hit / core.length : 0;
-  }
-
-  function scoreKw(e, seed) {
-    let s = Math.log10((e.sv || 0) + 10) * 10;
-    if (e.kd !== null && e.kd !== undefined) s -= e.kd * 0.15;
-    s += e.comps.length * 6;
-    if (/\b(market|industry)\b/.test(e.kw)) s += 6;
-    if (/\b(size|share|growth|forecast|trends?|analysis|report|outlook|cagr|value)\b/.test(e.kw)) s += 5;
-    if (e.kw === seed) s += 50;
-    if (e.kw.split(' ').length > 7) s -= 5;
-    return Math.round(s * 10) / 10;
-  }
-
-  function mergeCandidates(seed, related, compSets) {
-    const map = new Map();
-    const add = (k, src, domain) => {
-      if (!k || !k.kw) return;
-      const key = k.kw.toLowerCase().replace(/\s+/g, ' ').trim();
-      let e = map.get(key);
-      if (!e) { e = { kw: key, sv: k.sv, kd: k.kd, cpc: k.cpc, ppc: k.ppc, sources: [], comps: [] }; map.set(key, e); }
-      else {
-        if ((k.sv || 0) > (e.sv || 0)) e.sv = k.sv;
-        if (e.kd === null || e.kd === undefined) e.kd = k.kd;
-        if (e.cpc === null || e.cpc === undefined) e.cpc = k.cpc;
-      }
-      if (e.sources.indexOf(src) < 0) e.sources.push(src);
-      if (domain && e.comps.indexOf(domain) < 0) e.comps.push(domain);
-    };
-    related.forEach((k) => add(k, 'KWFinder'));
-    compSets.forEach((cs) => (cs.keywords || []).forEach((k) => add(k, 'Competitor', cs.domain)));
-    const core = coreTokens(seed);
-    const list = Array.from(map.values());
-    let filtered = list.filter((e) => relevance(e.kw, core) >= 1);
-    if (filtered.length < 15) filtered = list.filter((e) => relevance(e.kw, core) >= 0.5);
-    filtered.forEach((e) => { e.score = scoreKw(e, seed); });
-    return filtered.sort((a, b) => b.score - a.score);
-  }
-
-  async function runResearch() {
-    const btn = $('#kwRun');
-    const prog = KR.progress('#kwProgress');
-    const report = $('#kwReport').value.trim();
-    const seed = ($('#kwSeed').value.trim() || report).toLowerCase();
-    if (!seed) { KR.toast('Enter a report name or seed keyword.', 'err'); return; }
-    const loc = Number($('#kwLocation').value) || 0;
-    const locLabel = $('#kwLocation').selectedOptions[0].textContent;
-    const depth = Number($('#kwDepth').value) || 0;
-    KR.busy(btn, true, 'Researching…');
-    $('#kwSerp').classList.add('hidden');
-    $('#kwResults').classList.add('hidden');
-    const kw = S.kw = { report: report || KR.titleCase(seed), seed, loc, locLabel, related: [], serp: null, comp: [], rows: [], others: [], ai: {} };
+  // ---------- more secondary keywords from the Google top 10 ----------
+  // o = { primary, title, loc, existingUrl, existing: [keywords already in the list] }
+  async function suggestFromTop10(o, prog) {
+    let s = prog.step('Google top 10 for "' + o.primary + '"…');
+    const serp = await mgCall('serp', { kw: o.primary, location_id: o.loc || 0 }, prog);
+    const items = (serp.organic || []).filter((x) => !x.kr).slice(0, 10).map((x) => ({ url: x.url, domain: x.domain, position: x.position, title: x.title }));
+    if (!items.length) { s.fail('Mangools returned no Google results for this keyword.'); return []; }
+    s.done('Top 10: ' + items.map((x) => x.domain).join(', '));
+    s = prog.step('Reading the ' + items.length + ' ranking pages and picking secondary keywords…');
+    const r = await KR.api('keywords', 'pageTerms', { primary: o.primary, title: o.title, serp: items, existing: o.existing, existingUrl: o.existingUrl || '' });
+    s.done('Read ' + r.pagesRead + ' of ' + r.pagesTried + ' pages · ' + r.keywords.length + ' new keyword ideas');
+    if (!r.keywords.length) return [];
+    s = prog.step('Mangools: search volumes for ' + r.keywords.length + ' keywords…');
+    let vols = [];
     try {
-      let s = prog.step('KWFinder: fetching related keywords…');
-      try { const r = await mgCall('related', { kw: seed, location_id: loc }, prog); kw.related = r.keywords || []; s.done('KWFinder: ' + kw.related.length + ' related keywords'); }
-      catch (e) { s.fail('KWFinder failed: ' + e.message); }
+      const v = await mgCall('volumes', { keywords: r.keywords.map((k) => k.keyword), location_id: o.loc || 0 }, prog);
+      vols = v.keywords || [];
+      s.done('Search volumes added');
+    } catch (e) {
+      s.fail('Search volumes not available: ' + e.message);
+    }
+    const byKw = new Map(vols.map((k) => [k.kw, k]));
+    return r.keywords.map((k) => {
+      const v = byKw.get(k.keyword) || {};
+      return {
+        keyword: k.keyword,
+        sv: v.sv === undefined ? null : v.sv,
+        kd: v.kd === undefined ? null : v.kd,
+        cpc: v.cpc === undefined ? null : v.cpc,
+        why: k.why || '',
+        sources: k.sources || [],
+        seo: k.seo || ''
+      };
+    }).sort(bySv);
+  }
 
-      s = prog.step('SERPChecker: who ranks on Google for "' + seed + '"…');
-      try {
-        kw.serp = await mgCall('serp', { kw: seed, location_id: loc }, prog);
-        s.done('SERP: ' + kw.serp.organic.length + ' results · KD ' + (kw.serp.kd === null ? 'n/a' : kw.serp.kd) + ' · competitors ranking: ' + kw.serp.organic.filter((o) => o.competitor).length);
-        renderSerp();
-      } catch (e) { s.fail('SERPChecker failed: ' + e.message); }
+  // =====================================================================
+  // 1. FIND OPPORTUNITIES
+  // =====================================================================
+  function rankItem(t) {
+    return { key: t.key, status: t.kr.status, url: t.kr.url, primary: t.primary.kw, sv: t.primary.sv, total: t.totalVolume, kd: t.kd, comps: compsText(t) };
+  }
 
-      const urls = [];
-      if (kw.serp) kw.serp.organic.filter((o) => o.competitor).slice(0, depth).forEach((o) => urls.push(o.url));
-      $('#kwCompUrls').value.split(/\s+/).map((u) => u.trim()).filter((u) => /^https?:\/\//i.test(u)).forEach((u) => { if (urls.indexOf(u) < 0) urls.push(u); });
-      for (const url of urls) {
-        s = prog.step('Competitor keywords: ' + url);
-        try { const r = await mgCall('competitor', { url, location_id: loc }, prog); kw.comp.push(r); s.done('Competitor ' + r.domain + ': ' + r.keywords.length + ' ranking keywords'); }
-        catch (e) { s.fail('Competitor ' + url + ': ' + e.message); }
+  function sortTopics() {
+    S.opp.topics.sort((a, b) => {
+      const ka = a.keep === false ? 1 : 0;
+      const kb = b.keep === false ? 1 : 0;
+      if (ka !== kb) return ka - kb;
+      const pa = PRI[a.priority] === undefined ? 3 : PRI[a.priority];
+      const pb = PRI[b.priority] === undefined ? 3 : PRI[b.priority];
+      if (pa !== pb) return pa - pb;
+      return b.score - a.score;
+    });
+  }
+
+  // Shows the most recent scan from the Opportunities sheet when the page opens (unless a scan is already on screen).
+  let loadingScan = false;
+  async function loadLastScan() {
+    if (loadingScan || (S.opp && S.opp.topics && S.opp.topics.length)) return;
+    loadingScan = true;
+    try {
+      const r = await KR.api('keywords', 'lastScan');
+      if (!r.topics || !r.topics.length) return;
+      if (S.opp && S.opp.topics && S.opp.topics.length) return;
+      S.opp = freshOpp({ topics: r.topics, loc: locId(r.location), locLabel: r.location || 'Global', saved: { at: r.scannedAt, by: r.scannedBy } });
+      sortTopics();
+      renderOpps();
+    } catch (e) {
+      /* Sheet not configured yet, or no scan saved: nothing to show. */
+    } finally {
+      loadingScan = false;
+    }
+  }
+
+  async function runOpps() {
+    const btn = $('#opRun');
+    const prog = KR.progress('#opProgress');
+    const comps = $$('#opComps input:checked').map((c) => c.value);
+    if (!comps.length) { KR.toast('Tick at least one competitor.', 'err'); return; }
+    const pages = Number($('#opPages').value) || 1;
+    const loc = Number($('#opLocation').value) || 0;
+    const locLabel = $('#opLocation').selectedOptions[0].textContent;
+    KR.busy(btn, true, 'Scanning…');
+    $('#opResults').classList.add('hidden');
+    const O = S.opp = freshOpp({ loc, locLabel });
+    try {
+      const rows = [];
+      for (const d of comps) {
+        for (let p = 1; p <= pages; p++) {
+          const s = prog.step('Mangools: keywords ' + d + ' ranks for and we do not' + (pages > 1 ? ' (page ' + p + ')' : '') + '…');
+          let r;
+          try {
+            r = await mgCall('gap', { competitor: d, location_id: loc, page: p }, prog);
+          } catch (e) {
+            s.fail(d + ': ' + e.message);
+            break;
+          }
+          r.keywords.forEach((k) => rows.push([k[0], k[1], k[2], k[3], k[4], r.domain]));
+          s.done(d + ': ' + r.keywords.length.toLocaleString('en-US') + ' keywords' + (r.total ? ' (of ' + Number(r.total).toLocaleString('en-US') + ' gap keywords)' : ''));
+          if (!r.pagination || !r.keywords.length) break;
+        }
       }
-      if (!kw.related.length && !kw.comp.length) prog.info('No Mangools data, so the AI will propose keywords from its own knowledge. Check volumes manually.');
+      if (!rows.length) throw new Error('Mangools returned no competitor keywords. Check MANGOOLS_API_KEY and your remaining keyword lookups (free plans have only a few per day).');
 
-      const cands = mergeCandidates(seed, kw.related, kw.comp);
-      kw.candidates = cands;
-      s = prog.step('AI: choosing the primary and secondary keywords from ' + cands.length + ' candidates…');
-      const out = await KR.api('keywords', 'analyze', {
-        reportName: kw.report,
-        seed,
-        location: locLabel,
-        kd: kw.serp ? kw.serp.kd : null,
-        serp: kw.serp ? kw.serp.organic.slice(0, 10).map((o) => ({ position: o.position, domain: o.domain, title: o.title, competitor: o.competitor })) : [],
-        candidates: cands.slice(0, 120).map((c) => ({ kw: c.kw, sv: c.sv, kd: c.kd, cpc: c.cpc, comps: c.comps.length }))
-      });
-      kw.ai = out || {};
-      buildRows(kw.ai, cands);
-      s.done('AI picked 1 primary and ' + Math.max(0, kw.rows.length - 1) + ' secondary keywords');
-      renderResults();
+      let s = prog.step('Grouping ' + rows.length.toLocaleString('en-US') + ' keywords into report topics and checking our reports sitemap…');
+      const res = await KR.api('keywords', 'opportunities', { rows });
+      O.topics = res.topics || [];
+      const cnt = (st) => O.topics.filter((t) => t.kr.status === st).length;
+      s.done(O.topics.length + ' report topics: ' + cnt('New report') + ' not published, ' + cnt('Revamp') + ' published (revamp), ' + cnt('Similar report exists') + ' with a similar report · checked against ' + Number(res.krReports).toLocaleString('en-US') + ' published reports');
+      if (!O.topics.length) throw new Error('No report-style keywords (containing "market" or "industry") were found in the competitor data.');
+
+      const toRank = O.topics.filter((t) => !t.inPipeline).slice(0, 75);
+      if (toRank.length) {
+        s = prog.step('AI: prioritising the top ' + toRank.length + ' topics…');
+        let done = 0;
+        await KR.runLimited(KR.chunk(toRank, 25).map((batch) => async () => {
+          try {
+            const out = await KR.api('keywords', 'rank', { items: batch.map(rankItem) });
+            (out.items || []).forEach((x) => {
+              const t = O.topics.find((y) => y.key === x.key);
+              if (!t) return;
+              t.ai = true;
+              t.keep = x.keep;
+              t.priority = x.priority;
+              t.reason = x.reason;
+              if (x.title) t.title = x.title;
+              if (t.kr.status === 'Similar report exists') t.action = x.action;
+            });
+          } catch (e) {
+            prog.error('AI prioritising failed for one batch: ' + e.message);
+          }
+          done += batch.length;
+          s.set('AI: prioritising… ' + done + '/' + toRank.length);
+        }), 3);
+        s.done('AI prioritised ' + toRank.length + ' topics');
+      }
+      sortTopics();
+      renderOpps();
+      const n = Number($('#opAuto').value) || 0;
+      if (n > 0) await autoSend(n, prog);
+      saveScan();
     } catch (e) {
       prog.error(e.message);
       KR.toast(e.message, 'err');
@@ -130,121 +195,287 @@
     }
   }
 
-  function buildRows(out, cands) {
-    const byKw = new Map(cands.map((c) => [c.kw, c]));
-    const rows = [];
-    const seen = new Set();
-    const add = (k, type) => {
-      if (!k || !k.keyword) return;
-      const key = String(k.keyword).toLowerCase().replace(/\s+/g, ' ').trim();
-      if (!key || seen.has(key)) return;
-      seen.add(key);
-      const c = byKw.get(key);
-      rows.push({
-        keyword: key, type,
-        sv: c ? c.sv : null, kd: c ? c.kd : null, cpc: c ? c.cpc : null, ppc: c ? c.ppc : null,
-        competitors: c ? c.comps.join(', ') : '', compCount: c ? c.comps.length : 0,
-        source: c ? c.sources.join(' + ') : 'AI suggestion',
-        reason: String(k.reason || ''), placement: String(k.placement || '')
-      });
-    };
-    add(out.primary, 'Primary');
-    (Array.isArray(out.secondary) ? out.secondary : []).forEach((k) => add(k, 'Secondary'));
-    if (!rows.length && cands[0]) add({ keyword: cands[0].kw, reason: 'Highest-scoring candidate from Mangools data.' }, 'Primary');
-    S.kw.rows = rows;
-    S.kw.others = cands.filter((c) => !seen.has(c.kw)).slice(0, 80);
-  }
-
-  function renderSerp() {
-    const s = S.kw.serp;
-    if (!s) return;
-    const box = $('#kwSerp');
-    box.classList.remove('hidden');
-    const kr = s.organic.find((o) => o.kr);
-    box.innerHTML = '<h2>Google top 10 for "' + esc(s.kw) + '"</h2><p class="lead">Keyword difficulty ' + (s.kd === null ? 'n/a' : esc(s.kd)) + ' · ' + (kr ? 'Kings Research ranks #' + kr.position : 'Kings Research is not in the top results') + '</p>' +
-      '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>#</th><th>Domain</th><th>Title</th><th>DA</th><th>PA</th><th>CF / TF</th></tr></thead><tbody>' +
-      s.organic.slice(0, 10).map((o) => '<tr class="' + (o.competitor ? 'comp-row' : o.kr ? 'kr-row' : '') + '"><td>' + o.position + '</td><td>' + esc(o.domain) + (o.competitor ? ' <span class="tag comp">competitor</span>' : '') + (o.kr ? ' <span class="tag kr">us</span>' : '') + '</td><td><a href="' + esc(o.url) + '" target="_blank" rel="noopener">' + esc(o.title || o.url) + '</a></td><td>' + fmtNum(o.da) + '</td><td>' + fmtNum(o.pa) + '</td><td>' + fmtNum(o.cf) + ' / ' + fmtNum(o.tf) + '</td></tr>').join('') +
-      '</tbody></table></div>';
-  }
-
-  function renderResults() {
-    const kw = S.kw;
-    const ai = kw.ai || {};
-    const box = $('#kwResults');
-    box.classList.remove('hidden');
-    const faqs = Array.isArray(ai.faq_questions) ? ai.faq_questions : [];
-    box.innerHTML = '<h2>Proposed keywords for "' + esc(kw.report) + '"</h2>' +
-      (ai.strategy_note ? '<div class="note">' + esc(ai.strategy_note) + '</div>' : '') +
-      '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Keyword</th><th>Type</th><th>Volume</th><th>KD</th><th>CPC</th><th>Competitors</th><th>Why it is good for our page</th><th>Placement</th><th></th></tr></thead><tbody>' +
-      kw.rows.map((r, i) => '<tr><td><b>' + esc(r.keyword) + '</b><div class="muted small">' + esc(r.source) + '</div></td>' +
-        '<td><select data-kt="' + i + '"><option' + (r.type === 'Primary' ? ' selected' : '') + '>Primary</option><option' + (r.type === 'Secondary' ? ' selected' : '') + '>Secondary</option></select></td>' +
-        '<td>' + fmtNum(r.sv) + '</td><td>' + fmtNum(r.kd) + '</td><td>' + (r.cpc === null || r.cpc === undefined ? '–' : '$' + esc(r.cpc)) + '</td>' +
-        '<td title="' + esc(r.competitors) + '">' + (r.compCount || 0) + '</td>' +
-        '<td><textarea rows="2" data-kr="' + i + '">' + esc(r.reason) + '</textarea></td>' +
-        '<td class="small">' + esc(r.placement) + '</td>' +
-        '<td><button class="btn tiny danger" type="button" data-kdel="' + i + '">Remove</button></td></tr>').join('') +
-      '</tbody></table></div>' +
-      '<div class="row"><input id="kwAddInput" type="text" placeholder="Add a keyword manually"><button id="kwAddBtn" class="btn" type="button">Add</button><span class="grow"></span>' +
-      '<button id="kwSave" class="btn primary" type="button">Save for analyst verification</button></div>' +
-      (faqs.length ? '<h3>FAQ keyword ideas</h3><ul class="small">' + faqs.map((q) => '<li>' + esc(q) + '</li>').join('') + '</ul>' : '') +
-      '<details class="cat"><summary><span class="grow">More candidates (' + kw.others.length + ')</span></summary><div class="cat-body"><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Keyword</th><th>Volume</th><th>KD</th><th>Competitors</th><th>Score</th><th></th></tr></thead><tbody>' +
-      kw.others.map((c, i) => '<tr><td>' + esc(c.kw) + '</td><td>' + fmtNum(c.sv) + '</td><td>' + fmtNum(c.kd) + '</td><td>' + c.comps.length + '</td><td>' + esc(c.score) + '</td><td><button class="btn tiny" type="button" data-kadd="' + i + '">Add</button></td></tr>').join('') +
-      '</tbody></table></div></div></details>';
-  }
-
-  function onResultsChange(e) {
-    const t = e.target;
-    if (t.dataset.kt !== undefined) {
-      const i = Number(t.dataset.kt);
-      if (t.value === 'Primary') S.kw.rows.forEach((r, k) => { r.type = k === i ? 'Primary' : 'Secondary'; });
-      else S.kw.rows[i].type = 'Secondary';
-      renderResults();
+  async function autoSend(n, prog) {
+    const O = S.opp;
+    const pick = O.topics.filter((t) => t.priority === 'High' && t.keep !== false && !t.inPipeline && !O.sent.has(t.key)).slice(0, n);
+    if (!pick.length) { prog.info('Auto-send: no new High-priority topics to send.'); return; }
+    if (!KR.userName()) {
+      pick.forEach((t) => O.sel.add(t.key));
+      renderOppTable();
+      prog.info('Auto-send skipped because your name is empty. The ' + pick.length + ' High-priority topics are ticked: add your name (top right) and click "Send selected".');
+      return;
+    }
+    const s = prog.step('Sending the top ' + pick.length + ' High-priority topics to analyst verification…');
+    try {
+      const r = await sendTopics(pick);
+      s.done('Sent ' + r.saved + ' topics (' + r.rows + ' keywords) to analyst verification');
+    } catch (e) {
+      s.fail('Auto-send failed: ' + e.message);
     }
   }
 
-  function onResultsInput(e) {
-    const t = e.target;
-    if (t.dataset.kr !== undefined) S.kw.rows[Number(t.dataset.kr)].reason = t.value;
+  async function sendTopics(input) {
+    const user = KR.requireUser();
+    const O = S.opp;
+    const list = (input || []).filter((t) => !t.inPipeline && !O.sent.has(t.key));
+    if (!list.length) throw new Error('These topics are already in the pipeline.');
+    const groups = list.map((t) => {
+      const comps = Object.keys(t.positions || {}).join(', ');
+      const secs = t.secondary.slice().sort(bySv).slice(0, 20);
+      return {
+        reportName: t.title,
+        seed: t.primary.kw,
+        location: O.locLabel,
+        action: t.action,
+        existingUrl: t.kr.url || '',
+        rows: [t.primary].concat(secs).map((k, i) => ({
+          keyword: k.kw,
+          type: i === 0 ? 'Primary' : 'Secondary',
+          sv: k.sv, kd: k.kd, cpc: k.cpc, ppc: null,
+          competitors: k.sources && k.sources.length ? k.sources.join(', ') : comps,
+          source: i === 0 ? 'Competitor gap' : (k.src || 'Competitor gap'),
+          reason: i === 0 ? (t.reason || ('Competitors rank for it (' + compsText(t) + ') and we do not.')) : (k.why || ('Variant searched for the same report; ranked by ' + comps + ' and not by us.')),
+          placement: i === 0 ? 'Title, H1, meta and Overview' : ''
+        }))
+      };
+    });
+    const r = await KR.api('keywords', 'saveGroups', { user, groups });
+    list.forEach((t) => { O.sent.add(t.key); O.sel.delete(t.key); });
+    renderOppTable();
+    return r;
   }
 
-  function onResultsClick(e) {
-    const t = e.target.closest('button');
-    if (!t) return;
-    if (t.dataset.kdel !== undefined) { S.kw.rows.splice(Number(t.dataset.kdel), 1); renderResults(); }
-    else if (t.dataset.kadd !== undefined) {
-      const c = S.kw.others.splice(Number(t.dataset.kadd), 1)[0];
-      if (c) S.kw.rows.push({ keyword: c.kw, type: 'Secondary', sv: c.sv, kd: c.kd, cpc: c.cpc, ppc: c.ppc, competitors: c.comps.join(', '), compCount: c.comps.length, source: c.sources.join(' + '), reason: '', placement: '' });
-      renderResults();
-    } else if (t.id === 'kwAddBtn') {
-      const v = $('#kwAddInput').value.trim().toLowerCase();
-      if (!v) return;
-      if (S.kw.rows.some((r) => r.keyword === v)) { KR.toast('That keyword is already in the list.'); return; }
-      const c = (S.kw.candidates || []).find((x) => x.kw === v);
-      S.kw.rows.push({ keyword: v, type: S.kw.rows.some((r) => r.type === 'Primary') ? 'Secondary' : 'Primary', sv: c ? c.sv : null, kd: c ? c.kd : null, cpc: c ? c.cpc : null, ppc: c ? c.ppc : null, competitors: c ? c.comps.join(', ') : '', compCount: c ? c.comps.length : 0, source: 'Manual', reason: '', placement: '' });
-      renderResults();
-    } else if (t.id === 'kwSave') saveKeywords(t);
+  function saveScan() {
+    const O = S.opp;
+    const topics = O.topics.filter((t) => t.keep !== false).slice(0, 300).map((t) => ({
+      title: t.title, action: t.action, priority: t.priority, krStatus: t.kr.status, krUrl: t.kr.url || '',
+      primary: t.primary.kw, primaryVolume: t.primary.sv, totalVolume: t.totalVolume, kd: t.kd, competitors: compsText(t),
+      bestPosition: t.bestPosition, score: t.score, reason: t.reason || '', secondary: t.secondary.map((k) => k.kw).join(', '),
+      inPipeline: O.sent.has(t.key) ? 'Sent for verification' : (t.inPipeline || '')
+    }));
+    if (!topics.length) return;
+    KR.api('keywords', 'saveScan', { user: KR.userName(), location: O.locLabel, topics })
+      .then((r) => KR.toast('Saved ' + r.saved + ' opportunities to the "Opportunities" sheet.', 'ok'))
+      .catch((e) => KR.toast('Opportunities were not saved to the sheet: ' + e.message, 'err'));
   }
 
-  async function saveKeywords(btn) {
+  async function enrichTopic(t, btn) {
+    const O = S.opp;
+    KR.busy(btn, true, 'Reading top 10…');
+    const prog = KR.progress('#opProgress');
     try {
-      const user = KR.requireUser();
-      KR.busy(btn, true, 'Saving…');
-      const r = await KR.api('keywords', 'save', { user, reportName: S.kw.report, seed: S.kw.seed, location: S.kw.locLabel, rows: S.kw.rows });
-      KR.toast('Saved ' + r.saved + ' keywords (group ' + r.groupId + '). Analysts can verify them now.', 'ok');
-      KR.showSub('kw', 'kw-verify');
+      const sugg = await suggestFromTop10({ primary: t.primary.kw, title: t.title, loc: O.loc, existingUrl: t.kr.url || '', existing: [t.primary.kw].concat(t.secondary.map((k) => k.kw)) }, prog);
+      let added = 0;
+      sugg.forEach((k) => {
+        if (t.secondary.some((x) => x.kw === k.keyword)) return;
+        t.secondary.push({ kw: k.keyword, sv: k.sv, kd: k.kd, cpc: k.cpc, src: 'Top-10 pages', why: k.why, seo: k.seo, sources: k.sources });
+        added++;
+      });
+      t.secondary.sort(bySv);
+      t.keywordCount = t.secondary.length + 1;
+      O.open.add(t.key);
+      renderOppTable();
+      KR.toast(added ? 'Added ' + added + ' secondary keywords from the top-10 pages to ' + t.title + '.' : 'No new secondary keywords were found on the top-10 pages.', added ? 'ok' : '');
     } catch (e) {
+      prog.error(e.message);
       KR.toast(e.message, 'err');
     } finally {
       KR.busy(btn, false);
     }
   }
 
-  // ---------- groups ----------
+  function visibleTopics() {
+    const O = S.opp;
+    const f = O.f;
+    const list = O.topics.filter((t) => {
+      if (f.hidePipe && t.inPipeline && !O.sent.has(t.key)) return false;
+      if (f.hideIrr && t.keep === false) return false;
+      if (f.st && t.action !== f.st) return false;
+      if (f.pr && t.priority !== f.pr) return false;
+      if (f.q) {
+        const hay = (t.title + ' ' + t.primary.kw + ' ' + t.secondary.map((k) => k.kw).join(' ')).toLowerCase();
+        if (hay.indexOf(f.q) < 0) return false;
+      }
+      return true;
+    });
+    if (f.sort === 'sv') list.sort((a, b) => nv(b.primary.sv) - nv(a.primary.sv));
+    else if (f.sort === 'total') list.sort((a, b) => nv(b.totalVolume) - nv(a.totalVolume));
+    else if (f.sort === 'kd') list.sort((a, b) => (nv(a.kd) < 0 ? 999 : nv(a.kd)) - (nv(b.kd) < 0 ? 999 : nv(b.kd)));
+    else if (f.sort === 'comps') list.sort((a, b) => Object.keys(b.positions || {}).length - Object.keys(a.positions || {}).length);
+    return list;
+  }
+
+  function renderOpps() {
+    const O = S.opp;
+    const box = $('#opResults');
+    box.classList.remove('hidden');
+    const c = (fn) => O.topics.filter(fn).length;
+    const sel = (v, cur) => (v === cur ? ' selected' : '');
+    box.innerHTML = '<h2>Keyword opportunities</h2>' +
+      (O.saved ? '<p class="note">Last scan from the Opportunities sheet: ' + esc(O.saved.at) + (O.saved.by ? ' by ' + esc(O.saved.by) : '') + ' · ' + esc(O.locLabel) + '. Click "Find opportunities" for a fresh scan.</p>' : '') +
+      '<div class="summary">' +
+      '<div class="cell"><div class="num">' + O.topics.length + '</div><div class="lbl">Report topics found</div></div>' +
+      '<div class="cell"><div class="num">' + c((t) => t.action === 'New report' && t.keep !== false) + '</div><div class="lbl">New reports</div></div>' +
+      '<div class="cell"><div class="num">' + c((t) => t.action === 'Revamp' && t.keep !== false) + '</div><div class="lbl">Revamps of published reports</div></div>' +
+      '<div class="cell"><div class="num good">' + c((t) => t.priority === 'High' && t.keep !== false) + '</div><div class="lbl">High priority</div></div>' +
+      '<div class="cell"><div class="num">' + c((t) => !!t.inPipeline || O.sent.has(t.key)) + '</div><div class="lbl">Already in the pipeline</div></div>' +
+      '</div>' +
+      '<div class="row">' +
+      '<input id="opFilter" type="text" class="grow" placeholder="Filter by topic or keyword" value="' + esc(O.f.q) + '">' +
+      '<select id="opSort" style="width:auto;margin:0"><option value=""' + sel('', O.f.sort) + '>Sort: priority</option><option value="sv"' + sel('sv', O.f.sort) + '>Sort: volume (high to low)</option><option value="total"' + sel('total', O.f.sort) + '>Sort: all-variants volume</option><option value="kd"' + sel('kd', O.f.sort) + '>Sort: KD (easiest first)</option><option value="comps"' + sel('comps', O.f.sort) + '>Sort: competitors ranking</option></select>' +
+      '<select id="opStatus" style="width:auto;margin:0"><option value="">New + Revamp</option><option value="New report"' + sel('New report', O.f.st) + '>New reports only</option><option value="Revamp"' + sel('Revamp', O.f.st) + '>Revamps only</option></select>' +
+      '<select id="opPriority" style="width:auto;margin:0"><option value="">All priorities</option><option' + sel('High', O.f.pr) + '>High</option><option' + sel('Medium', O.f.pr) + '>Medium</option><option' + sel('Low', O.f.pr) + '>Low</option></select>' +
+      '</div>' +
+      '<div class="row">' +
+      '<label class="chk"><input type="checkbox" id="opHidePipe"' + (O.f.hidePipe ? ' checked' : '') + '> Hide topics already in the pipeline</label>' +
+      '<label class="chk"><input type="checkbox" id="opHideIrr"' + (O.f.hideIrr ? ' checked' : '') + '> Hide not relevant</label>' +
+      '<span class="grow"></span><button id="opSelHigh" class="btn tiny" type="button">Select all High</button><button id="opSelNone" class="btn tiny ghost" type="button">Clear selection</button>' +
+      '<span class="hint" id="opSelCount"></span><button id="opSend" class="btn primary" type="button">Send selected to analyst verification</button></div>' +
+      '<div id="opTable"></div>';
+    renderOppTable();
+  }
+
+  function keywordsDetail(t) {
+    const rows = [Object.assign({ isPrimary: true }, t.primary)].concat(t.secondary.slice().sort(bySv));
+    return '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Keyword</th><th>Type</th><th>Volume</th><th>KD</th><th>Source</th></tr></thead><tbody>' +
+      rows.map((k) => '<tr><td>' + esc(k.kw) +
+        (k.seo && !/^OK/.test(k.seo) ? '<div class="muted small">SEO: ' + esc(k.seo) + '</div>' : '') +
+        (k.why ? '<div class="muted small">' + esc(k.why) + '</div>' : '') + '</td>' +
+        '<td>' + (k.isPrimary ? 'Primary' : 'Secondary') + '</td><td>' + fmtNum(k.sv) + '</td><td>' + fmtNum(k.kd) + '</td>' +
+        '<td class="small">' + (k.isPrimary ? '' : esc(k.src || 'Competitor gap') + (k.sources && k.sources.length ? '<div class="muted">' + esc(k.sources.join(', ')) + '</div>' : '')) + '</td></tr>').join('') +
+      '</tbody></table></div>';
+  }
+
+  function oppRow(t) {
+    const O = S.opp;
+    const sent = O.sent.has(t.key);
+    const locked = sent || !!t.inPipeline;
+    const kr = t.kr || {};
+    let actionCell;
+    if (kr.status === 'Similar report exists') {
+      actionCell = '<select data-oact="' + esc(t.key) + '" style="width:auto;margin:0"' + (locked ? ' disabled' : '') + '><option' + (t.action === 'New report' ? ' selected' : '') + '>New report</option><option' + (t.action === 'Revamp' ? ' selected' : '') + '>Revamp</option></select>' +
+        '<div class="small">Similar: ' + link(kr.url, kr.name) + '</div>';
+    } else if (kr.status === 'Revamp') {
+      actionCell = '<span class="tag comp">Revamp</span><div class="small">' + link(kr.url, kr.name) + (kr.lastmod ? '<span class="muted"> · updated ' + esc(kr.lastmod) + '</span>' : '') + '</div>';
+    } else {
+      actionCell = '<span class="tag kr">New report</span><div class="muted small">not on our site</div>';
+    }
+    const comps = Object.keys(t.positions || {}).map((d) => esc(d.replace(/\.com$/, '')) + (t.positions[d] ? ' <b>#' + t.positions[d] + '</b>' : '')).join('<br>');
+    let html = '<tr' + (t.keep === false ? ' class="warn-row"' : '') + '>' +
+      '<td><input type="checkbox" data-osel="' + esc(t.key) + '"' + (O.sel.has(t.key) ? ' checked' : '') + (locked ? ' disabled title="Already in the pipeline"' : '') + '></td>' +
+      '<td><b>' + esc(t.title) + '</b><div class="muted small">' + esc(t.primary.kw) + ' · ' + t.keywordCount + ' keyword' + (t.keywordCount === 1 ? '' : 's') + '</div>' +
+      (t.inPipeline && !sent ? '<span class="tag">' + esc(t.inPipeline) + '</span>' : '') + (sent ? '<span class="tag ok">sent for verification</span>' : '') +
+      (t.keep === false ? '<span class="tag bad">not relevant</span>' : '') + '</td>' +
+      '<td>' + actionCell + '</td>' +
+      '<td><span class="tag' + (t.priority === 'High' ? ' ok' : '') + '">' + esc(t.priority) + '</span>' + (t.ai ? '' : '<div class="muted small">by volume</div>') + '</td>' +
+      '<td>' + fmtNum(t.primary.sv) + '<div class="muted small">all variants ' + fmtNum(t.totalVolume) + '</div></td>' +
+      '<td>' + fmtNum(t.kd) + '</td>' +
+      '<td class="small">' + comps + '</td>' +
+      '<td class="small">' + esc(t.reason || '') + '</td>' +
+      '<td class="nowrap"><button class="btn tiny" type="button" data-okw="' + esc(t.key) + '">' + (O.open.has(t.key) ? 'Hide' : 'Keywords') + '</button> ' +
+      (locked ? '' : '<button class="btn tiny ghost" type="button" data-omore="' + esc(t.key) + '" title="Read the pages ranking in Google\'s top 10 and add secondary keywords from them">More keywords</button>') + '</td></tr>';
+    if (O.open.has(t.key)) html += '<tr><td></td><td colspan="8">' + keywordsDetail(t) + '</td></tr>';
+    return html;
+  }
+
+  function renderOppTable() {
+    const box = $('#opTable');
+    if (!box) return;
+    const list = visibleTopics();
+    const shown = list.slice(0, 150);
+    const arrow = (k) => (S.opp.f.sort === k ? ' &#9660;' : '');
+    box.innerHTML = (list.length > shown.length ? '<p class="hint">Showing 150 of ' + list.length + ' topics. Use the filters to narrow down.</p>' : '') +
+      (shown.length
+        ? '<div class="tbl-wrap"><table class="tbl"><thead><tr><th></th><th>Report</th><th>Action</th>' +
+          '<th data-osort="" style="cursor:pointer" title="Sort by priority">Priority' + arrow('') + '</th>' +
+          '<th data-osort="sv" style="cursor:pointer" title="Sort by volume">Volume' + arrow('sv') + '</th>' +
+          '<th data-osort="kd" style="cursor:pointer" title="Sort by KD, easiest first">KD' + arrow('kd') + '</th>' +
+          '<th data-osort="comps" style="cursor:pointer" title="Sort by competitors ranking">Competitors ranking' + arrow('comps') + '</th>' +
+          '<th>Why take it up</th><th></th></tr></thead><tbody>' +
+          shown.map(oppRow).join('') + '</tbody></table></div>'
+        : '<p class="hint">No topics match these filters.</p>');
+    updateSelCount();
+  }
+
+  function updateSelCount() {
+    const el = $('#opSelCount');
+    if (el) el.textContent = S.opp.sel.size ? S.opp.sel.size + ' selected' : '';
+  }
+
+  function findTopic(key) { return (S.opp.topics || []).find((t) => t.key === key); }
+
+  function onOppInput(e) {
+    if (e.target.id === 'opFilter') { S.opp.f.q = e.target.value.trim().toLowerCase(); renderOppTable(); }
+  }
+
+  function onOppChange(e) {
+    const t = e.target;
+    const O = S.opp;
+    if (t.id === 'opSort') { O.f.sort = t.value; renderOppTable(); return; }
+    if (t.id === 'opStatus') { O.f.st = t.value; renderOppTable(); return; }
+    if (t.id === 'opPriority') { O.f.pr = t.value; renderOppTable(); return; }
+    if (t.id === 'opHidePipe') { O.f.hidePipe = t.checked; renderOppTable(); return; }
+    if (t.id === 'opHideIrr') { O.f.hideIrr = t.checked; renderOppTable(); return; }
+    if (t.dataset.osel !== undefined) {
+      if (t.checked) O.sel.add(t.dataset.osel); else O.sel.delete(t.dataset.osel);
+      updateSelCount();
+      return;
+    }
+    if (t.dataset.oact !== undefined) {
+      const tp = findTopic(t.dataset.oact);
+      if (tp) tp.action = t.value === 'Revamp' ? 'Revamp' : 'New report';
+    }
+  }
+
+  async function onOppClick(e) {
+    const O = S.opp;
+    const th = e.target.closest('th[data-osort]');
+    if (th) {
+      O.f.sort = th.getAttribute('data-osort');
+      const s = $('#opSort');
+      if (s) s.value = O.f.sort;
+      renderOppTable();
+      return;
+    }
+    const b = e.target.closest('button');
+    if (!b) return;
+    if (b.id === 'opSelHigh') {
+      visibleTopics().forEach((t) => { if (t.priority === 'High' && t.keep !== false && !t.inPipeline && !O.sent.has(t.key)) O.sel.add(t.key); });
+      renderOppTable();
+    } else if (b.id === 'opSelNone') {
+      O.sel.clear();
+      renderOppTable();
+    } else if (b.id === 'opSend') {
+      const list = O.topics.filter((t) => O.sel.has(t.key) && !O.sent.has(t.key) && !t.inPipeline);
+      if (!list.length) { KR.toast('Tick the topics to send first.'); return; }
+      KR.busy(b, true, 'Sending…');
+      try {
+        const r = await sendTopics(list);
+        KR.toast('Sent ' + r.saved + ' topic(s) to analyst verification.', 'ok');
+      } catch (err) {
+        KR.toast(err.message, 'err');
+      } finally {
+        KR.busy(b, false);
+      }
+    } else if (b.dataset.okw !== undefined) {
+      if (O.open.has(b.dataset.okw)) O.open.delete(b.dataset.okw); else O.open.add(b.dataset.okw);
+      renderOppTable();
+    } else if (b.dataset.omore !== undefined) {
+      const t = findTopic(b.dataset.omore);
+      if (t) enrichTopic(t, b);
+    }
+  }
+
+  // =====================================================================
+  // 2. ANALYST VERIFICATION, 3. MANAGER APPROVAL, RESEARCH LIST
+  // =====================================================================
   async function loadGroups() {
     const r = await KR.api('keywords', 'list');
     S.kwGroups = r.groups || [];
     return S.kwGroups;
   }
+
+  function currentGroup() { return (S.kwGroups || []).find((x) => x.groupId === $('#kvGroup').value); }
 
   async function loadVerify() {
     const sel = $('#kvGroup');
@@ -254,7 +485,7 @@
       const groups = (await loadGroups()).filter((g) => g.status === 'Pending Verification');
       const cur = sel.value;
       sel.innerHTML = groups.length
-        ? groups.map((g) => '<option value="' + esc(g.groupId) + '">' + esc(g.reportName) + ' · ' + esc(g.createdAt) + ' · ' + g.rows.length + ' keywords</option>').join('')
+        ? groups.map((g) => '<option value="' + esc(g.groupId) + '">' + esc(g.reportName) + ' · ' + esc(g.action) + ' · ' + esc(g.createdAt) + ' · ' + g.rows.length + ' keywords</option>').join('')
         : '<option value="">No keyword groups are waiting for verification</option>';
       if (cur && groups.some((g) => g.groupId === cur)) sel.value = cur;
       renderVerify();
@@ -264,15 +495,70 @@
   }
 
   function renderVerify() {
-    const g = (S.kwGroups || []).find((x) => x.groupId === $('#kvGroup').value);
+    const g = currentGroup();
     const box = $('#kvTable');
     if (!g) { box.innerHTML = '<p class="hint">Nothing to verify right now.</p>'; return; }
-    box.innerHTML = '<p class="small muted">Seed: ' + esc(g.seed) + ' · Location: ' + esc(g.location) + ' · Researched by ' + esc(g.createdBy) + '</p>' +
+    if (S.kvSugg && S.kvSugg.groupId !== g.groupId) S.kvSugg = null;
+    const rows = g.rows.filter((r) => r.type === 'Primary').concat(g.rows.filter((r) => r.type !== 'Primary').sort(bySv));
+    box.innerHTML = '<p class="small">' + actionHtml(g.action, g.existingUrl) + ' <span class="muted">· Seed: ' + esc(g.seed) + ' · Location: ' + esc(g.location) + ' · Proposed by ' + esc(g.createdBy) + ' · secondary keywords sorted by volume</span></p>' +
       '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Keyword</th><th>Type</th><th>Volume</th><th>KD</th><th>Verdict</th><th>Reason (why it is, or is not, good for our page)</th></tr></thead><tbody>' +
-      g.rows.map((r) => '<tr data-id="' + esc(r.id) + '"><td><b>' + esc(r.keyword) + '</b><div class="muted small">' + esc(r.placement) + '</div></td><td>' + esc(r.type) + '</td><td>' + fmtNum(r.sv) + '</td><td>' + fmtNum(r.kd) + '</td>' +
+      rows.map((r) => '<tr data-id="' + esc(r.id) + '"><td><b>' + esc(r.keyword) + '</b><div class="muted small">' + esc(r.placement || r.source) + '</div></td><td>' + esc(r.type) + '</td><td>' + fmtNum(r.sv) + '</td><td>' + fmtNum(r.kd) + '</td>' +
         '<td class="nowrap"><label class="chk"><input type="radio" name="v-' + esc(r.id) + '" value="Good"' + (r.verdict === 'Good' ? ' checked' : '') + '> Good</label><br><label class="chk"><input type="radio" name="v-' + esc(r.id) + '" value="Not good"' + (r.verdict === 'Not good' ? ' checked' : '') + '> Not good</label></td>' +
         '<td><textarea rows="2" class="v-reason">' + esc(r.analystReason || r.reason) + '</textarea></td></tr>').join('') +
-      '</tbody></table></div><div class="row"><button class="btn" id="kvAllGood" type="button">Mark all Good</button><span class="grow"></span><button class="btn primary" id="kvSubmit" type="button">Submit verification</button></div>';
+      '</tbody></table></div>' +
+      '<div class="row"><button class="btn" id="kvAllGood" type="button">Mark all Good</button><button class="btn ghost" id="kvMore" type="button">Suggest more secondary keywords (from top-10 pages)</button><span class="grow"></span><button class="btn primary" id="kvSubmit" type="button">Submit verification</button></div>' +
+      '<div id="kvProgress" class="progress"></div><div id="kvMoreBox"></div>';
+    renderMore();
+  }
+
+  async function moreForGroup(btn) {
+    const g = currentGroup();
+    if (!g) return;
+    const primaryRow = g.rows.find((r) => r.type === 'Primary') || g.rows[0];
+    KR.busy(btn, true, 'Reading top 10…');
+    const prog = KR.progress('#kvProgress');
+    try {
+      const sugg = await suggestFromTop10({ primary: primaryRow.keyword, title: g.reportName, loc: locId(g.location), existingUrl: g.existingUrl || '', existing: g.rows.map((r) => r.keyword) }, prog);
+      S.kvSugg = { groupId: g.groupId, list: sugg };
+      renderMore();
+    } catch (e) {
+      prog.error(e.message);
+      KR.toast(e.message, 'err');
+    } finally {
+      KR.busy(btn, false);
+    }
+  }
+
+  function renderMore() {
+    const box = $('#kvMoreBox');
+    const sg = S.kvSugg;
+    if (!box) return;
+    if (!sg) { box.innerHTML = ''; return; }
+    if (!sg.list.length) { box.innerHTML = '<p class="hint">No new secondary keywords were found on the top-10 pages.</p>'; return; }
+    box.innerHTML = '<h3>Suggested from the top-10 pages (sorted by volume)</h3><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Add</th><th>Keyword</th><th>Volume</th><th>KD</th><th>Why</th><th>Seen on</th></tr></thead><tbody>' +
+      sg.list.map((k, i) => '<tr><td><input type="checkbox" data-kvs="' + i + '"' + (/^OK/.test(k.seo || 'OK') ? ' checked' : '') + '></td>' +
+        '<td><b>' + esc(k.keyword) + '</b>' + (k.seo && !/^OK/.test(k.seo) ? '<div class="muted small">SEO: ' + esc(k.seo) + '</div>' : '') + '</td>' +
+        '<td>' + fmtNum(k.sv) + '</td><td>' + fmtNum(k.kd) + '</td><td class="small">' + esc(k.why) + '</td><td class="small">' + esc((k.sources || []).join(', ')) + '</td></tr>').join('') +
+      '</tbody></table></div><div class="row"><span class="grow"></span><button class="btn primary" id="kvAddMore" type="button">Add selected to this group</button></div>';
+  }
+
+  async function addMore(btn) {
+    const sg = S.kvSugg;
+    if (!sg) return;
+    try {
+      const user = KR.requireUser();
+      const rows = $$('#kvMoreBox input[data-kvs]').filter((c) => c.checked).map((c) => sg.list[Number(c.dataset.kvs)]).filter(Boolean)
+        .map((k) => ({ keyword: k.keyword, sv: k.sv, kd: k.kd, cpc: k.cpc, why: k.why, sources: (k.sources || []).join(', ') }));
+      if (!rows.length) throw new Error('Tick the keywords to add.');
+      KR.busy(btn, true, 'Adding…');
+      const r = await KR.api('keywords', 'addRows', { user, groupId: sg.groupId, rows });
+      KR.toast('Added ' + r.added + ' keywords to the group.', 'ok');
+      S.kvSugg = null;
+      await loadVerify();
+    } catch (e) {
+      KR.toast(e.message, 'err');
+      KR.busy(btn, false);
+    }
   }
 
   async function submitVerify(btn) {
@@ -288,6 +574,7 @@
       KR.busy(btn, true, 'Submitting…');
       await KR.api('keywords', 'verify', { groupId: gid, analyst: user, verdicts });
       KR.toast('Verification submitted and sent to the manager for approval.', 'ok');
+      S.kvSugg = null;
       await loadVerify();
     } catch (e) {
       KR.toast(e.message, 'err');
@@ -303,10 +590,14 @@
     try {
       const groups = (await loadGroups()).filter((g) => g.status === 'Awaiting Approval');
       if (!groups.length) { box.innerHTML = '<p class="hint">No keyword groups are waiting for approval.</p>'; return; }
-      box.innerHTML = groups.map((g) => '<div class="group" data-gid="' + esc(g.groupId) + '"><div class="group-head"><b>' + esc(g.reportName) + '</b> <span class="muted small">' + esc(g.groupId) + ' · seed "' + esc(g.seed) + '" · verified by ' + esc((g.rows[0] && g.rows[0].analyst) || '') + '</span></div>' +
-        '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Approve</th><th>Keyword</th><th>Type</th><th>Volume</th><th>KD</th><th>Analyst verdict</th><th>Analyst reason</th></tr></thead><tbody>' +
-        g.rows.map((r) => '<tr><td><input type="checkbox" data-aid="' + esc(r.id) + '"' + (r.verdict === 'Good' ? ' checked' : '') + '></td><td><b>' + esc(r.keyword) + '</b></td><td>' + esc(r.type) + '</td><td>' + fmtNum(r.sv) + '</td><td>' + fmtNum(r.kd) + '</td><td><span class="tag ' + (r.verdict === 'Good' ? 'ok' : 'bad') + '">' + esc(r.verdict) + '</span></td><td class="small">' + esc(r.analystReason) + '</td></tr>').join('') +
-        '</tbody></table></div><div class="row"><input type="text" class="ka-note grow" placeholder="Note (optional)"><button class="btn danger" type="button" data-decide="reject">Reject</button><button class="btn primary" type="button" data-decide="approve">Approve to Research List</button></div></div>').join('');
+      box.innerHTML = groups.map((g) => {
+        const rows = g.rows.filter((r) => r.type === 'Primary').concat(g.rows.filter((r) => r.type !== 'Primary').sort(bySv));
+        return '<div class="group" data-gid="' + esc(g.groupId) + '"><div class="group-head"><b>' + esc(g.reportName) + '</b> ' + actionHtml(g.action, g.existingUrl) +
+          ' <span class="muted small">' + esc(g.groupId) + ' · seed "' + esc(g.seed) + '" · verified by ' + esc((g.rows[0] && g.rows[0].analyst) || '') + '</span></div>' +
+          '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Approve</th><th>Keyword</th><th>Type</th><th>Volume</th><th>KD</th><th>Analyst verdict</th><th>Analyst reason</th></tr></thead><tbody>' +
+          rows.map((r) => '<tr><td><input type="checkbox" data-aid="' + esc(r.id) + '"' + (r.verdict === 'Good' ? ' checked' : '') + '></td><td><b>' + esc(r.keyword) + '</b>' + (r.seoCheck && !/^OK/.test(r.seoCheck) ? '<div class="muted small">SEO: ' + esc(r.seoCheck) + '</div>' : '') + '</td><td>' + esc(r.type) + '</td><td>' + fmtNum(r.sv) + '</td><td>' + fmtNum(r.kd) + '</td><td><span class="tag ' + (r.verdict === 'Good' ? 'ok' : 'bad') + '">' + esc(r.verdict) + '</span></td><td class="small">' + esc(r.analystReason) + '</td></tr>').join('') +
+          '</tbody></table></div><div class="row"><input type="text" class="ka-note grow" placeholder="Note (optional)"><button class="btn danger" type="button" data-decide="reject">Reject</button><button class="btn primary" type="button" data-decide="approve">Approve to Research List</button></div></div>';
+      }).join('');
     } catch (e) {
       box.innerHTML = '<p class="err">' + esc(e.message) + '</p>';
     }
@@ -323,7 +614,7 @@
       const approvedIds = $$('input[data-aid]', g).filter((c) => c.checked).map((c) => c.dataset.aid);
       KR.busy(btn, true, 'Saving…');
       const r = await KR.api('keywords', 'decide', { groupId: g.dataset.gid, email, pin, decision: btn.dataset.decide, note: $('.ka-note', g).value, approvedIds });
-      KR.toast(btn.dataset.decide === 'approve' ? 'Approved: "' + r.primary + '" added to the Research List on ' + r.approvalDate + '.' : 'Keyword group rejected.', 'ok');
+      KR.toast(btn.dataset.decide === 'approve' ? 'Approved (' + r.action + '): "' + r.primary + '" added to the Research List on ' + r.approvalDate + '.' : 'Keyword group rejected.', 'ok');
       await loadApprove();
     } catch (e) {
       KR.toast(e.message, 'err');
@@ -331,7 +622,6 @@
     }
   }
 
-  // ---------- Research List ----------
   KR.loadResearch = async () => {
     const r = await KR.api('keywords', 'research');
     S.research = r.rows || [];
@@ -340,15 +630,23 @@
 
   KR.researchTable = (rows, withActions) => {
     if (!rows.length) return '<p class="hint">No approved keywords yet.</p>';
-    return '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Report</th><th>Primary keyword</th><th>Secondary keywords</th><th>Approved</th><th>Live</th><th>Live date</th><th>Last live check</th>' + (withActions ? '<th></th>' : '') + '</tr></thead><tbody>' +
-      rows.map((r, i) => '<tr><td><b>' + esc(r.reportName) + '</b><div class="muted small">' + esc(r.groupId) + '</div></td>' +
-        '<td>' + esc(r.primary) + '<div class="muted small">Vol ' + fmtNum(r.sv) + ' · KD ' + fmtNum(r.kd) + '</div></td>' +
-        '<td class="small">' + esc(r.secondary) + '</td>' +
-        '<td class="small">' + esc(r.approvalDate) + '<div class="muted">' + esc(r.approvedBy) + '</div></td>' +
-        '<td>' + (r.liveStatus === 'Live' ? '<span class="tag ok">Live</span><div class="small"><a href="' + esc(r.liveUrl) + '" target="_blank" rel="noopener">' + esc(String(r.liveUrl || '').replace(/^https?:\/\/(www\.)?/, '')) + '</a></div>' : '<span class="tag">' + esc(r.liveStatus || 'Not live') + '</span>') + '</td>' +
-        '<td class="small">' + esc(r.liveDate) + (r.detectedOn ? '<div class="muted">detected ' + esc(r.detectedOn) + '</div>' : '') + '</td>' +
-        '<td class="small">' + esc(r.lastCheck) + '<div class="muted">' + esc(r.checkSummary) + '</div></td>' +
-        (withActions ? '<td>' + (r.liveStatus === 'Live' && r.liveUrl ? '<button class="btn tiny" type="button" data-lvcheck="' + i + '">Run live check</button>' : '') + '</td>' : '') + '</tr>').join('') +
+    return '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Report</th><th>Action</th><th>Primary keyword</th><th>Secondary keywords</th><th>Approved</th><th>Live</th><th>Live date</th><th>Last live check</th>' + (withActions ? '<th></th>' : '') + '</tr></thead><tbody>' +
+      rows.map((r, i) => {
+        const liveLink = r.liveUrl ? '<div class="small">' + link(r.liveUrl) + '</div>' : '';
+        let live;
+        if (r.liveStatus === 'Live') live = '<span class="tag ok">Live</span>' + liveLink;
+        else if (r.liveStatus === 'Revamp pending') live = '<span class="tag comp">Revamp pending</span>' + liveLink;
+        else live = '<span class="tag">' + esc(r.liveStatus || 'Not live') + '</span>';
+        return '<tr><td><b>' + esc(r.reportName) + '</b><div class="muted small">' + esc(r.groupId) + '</div></td>' +
+          '<td>' + actionHtml(r.action, r.action === 'Revamp' ? '' : r.existingUrl) + '</td>' +
+          '<td>' + esc(r.primary) + '<div class="muted small">Vol ' + fmtNum(r.sv) + ' · KD ' + fmtNum(r.kd) + '</div></td>' +
+          '<td class="small">' + esc(r.secondary) + '</td>' +
+          '<td class="small">' + esc(r.approvalDate) + '<div class="muted">' + esc(r.approvedBy) + '</div></td>' +
+          '<td>' + live + '</td>' +
+          '<td class="small">' + esc(r.liveDate) + (r.detectedOn ? '<div class="muted">detected ' + esc(r.detectedOn) + '</div>' : '') + '</td>' +
+          '<td class="small">' + esc(r.lastCheck) + '<div class="muted">' + esc(r.checkSummary) + '</div></td>' +
+          (withActions ? '<td>' + (r.liveStatus === 'Live' && r.liveUrl ? '<button class="btn tiny" type="button" data-lvcheck="' + i + '">Run live check</button>' : '') + '</td>' : '') + '</tr>';
+      }).join('') +
       '</tbody></table></div>';
   };
 
@@ -360,25 +658,35 @@
   }
 
   KR.initKeywords = () => {
-    $('#kwRun').addEventListener('click', runResearch);
-    $('#kwReport').addEventListener('change', () => { if (!$('#kwSeed').value.trim()) $('#kwSeed').value = $('#kwReport').value.trim().toLowerCase(); });
-    const res = $('#kwResults');
-    res.addEventListener('change', onResultsChange);
-    res.addEventListener('input', onResultsInput);
-    res.addEventListener('click', onResultsClick);
+    S.opp = freshOpp();
+    S.kvSugg = null;
+    $('#opRun').addEventListener('click', runOpps);
+    const opp = $('#opResults');
+    opp.addEventListener('input', onOppInput);
+    opp.addEventListener('change', onOppChange);
+    opp.addEventListener('click', onOppClick);
+
     $('#kvRefresh').addEventListener('click', loadVerify);
-    $('#kvGroup').addEventListener('change', renderVerify);
+    $('#kvGroup').addEventListener('change', () => { S.kvSugg = null; renderVerify(); });
     $('#kvTable').addEventListener('click', (e) => {
       const b = e.target.closest('button');
       if (!b) return;
       if (b.id === 'kvAllGood') $$('#kvTable input[value="Good"]').forEach((r) => { r.checked = true; });
       if (b.id === 'kvSubmit') submitVerify(b);
+      if (b.id === 'kvMore') moreForGroup(b);
+      if (b.id === 'kvAddMore') addMore(b);
     });
     $('#kaRefresh').addEventListener('click', loadApprove);
     $('#kaList').addEventListener('click', (e) => { const b = e.target.closest('button[data-decide]'); if (b) decide(b); });
     $('#klRefresh').addEventListener('click', loadResearchList);
+    KR.hooks.sub['kw-opps'] = loadLastScan;
     KR.hooks.sub['kw-verify'] = loadVerify;
     KR.hooks.sub['kw-approve'] = loadApprove;
     KR.hooks.sub['kw-list'] = loadResearchList;
+    KR.hooks.tab.keywords = () => {
+      const active = $('.subtabs[data-group="kw"] button.active');
+      if (active && KR.hooks.sub[active.dataset.sub]) KR.hooks.sub[active.dataset.sub]();
+    };
+    loadLastScan();
   };
 })();

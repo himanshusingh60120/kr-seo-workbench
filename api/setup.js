@@ -2,10 +2,20 @@
 
 const { handler, competitors } = require('../lib/http');
 const sheets = require('../lib/sheets');
+const FC = require('../lib/factcheck');
+const jev = require('../lib/jev');
+const web = require('../lib/search');
+
+const ENGINE_LABEL = {
+  lite: 'lite (web search judged by Jev; the linked source is checked when no search is available)',
+  deep: 'deep (OpenAI web search)',
+  both: 'both (OpenAI web search, with the lite result shown beside it)'
+};
 
 module.exports = handler({
   async status() {
     const id = sheets.sheetId();
+    const eng = FC.engine();
     return {
       env: {
         OPENAI_API_KEY: !!process.env.OPENAI_API_KEY,
@@ -20,7 +30,14 @@ module.exports = handler({
       sheetId: id,
       sheetUrl: 'https://docs.google.com/spreadsheets/d/' + id + '/edit',
       managerEmail: process.env.MANAGER_EMAIL || 'habi@kingsresearch.com',
-      model: process.env.OPENAI_MODEL || 'gpt-4.1-mini',
+      // The Setup dialog prints this line as it is, so the cost-saving settings are shown here too.
+      model: (process.env.OPENAI_MODEL || 'gpt-4.1-mini') +
+        ' · Fact-check engine: ' + ENGINE_LABEL[eng] +
+        ' · Jev key: ' + (jev.configured() ? 'set' : 'not set') +
+        ' · Web search key: ' + (web.configured() ? 'set' : 'not set'),
+      factEngine: eng,
+      jev: jev.configured(),
+      search: web.configured(),
       webSearch: String(process.env.OPENAI_WEB_SEARCH || 'true').toLowerCase() !== 'false',
       competitors: competitors(),
       tabs: sheets.tabNames()

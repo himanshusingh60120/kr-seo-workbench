@@ -40,21 +40,19 @@
 <!-- ===================== KEYWORDS ===================== -->
 <section id="tab-keywords" class="tab active">
   <div class="subtabs" data-group="kw">
-    <button type="button" data-sub="kw-research" class="active">1 · Research</button>
+    <button type="button" data-sub="kw-opps" class="active">1 · Find opportunities</button>
     <button type="button" data-sub="kw-verify">2 · Analyst verification</button>
     <button type="button" data-sub="kw-approve">3 · Manager approval</button>
     <button type="button" data-sub="kw-list">Research List</button>
   </div>
 
-  <div id="kw-research" class="sub active">
+  <div id="kw-opps" class="sub active">
     <div class="card">
-      <h2>Keyword research</h2>
-      <p class="lead">Mangools KWFinder + SERPChecker, competitor pages and AI selection of primary and secondary keywords.</p>
+      <h2>Find keyword opportunities</h2>
+      <p class="lead">One click finds the report keywords our competitors rank for and we don't, checks every topic against our reports sitemap, and proposes a <b>New report</b> or a <b>Revamp</b> of a published report, ranked by opportunity. Use <b>More keywords</b> on any topic to read the pages ranking in Google's top 10 and add secondary keywords from them.</p>
       <div class="grid3">
-        <label>Report name<input id="kwReport" type="text" placeholder="Genetic Engineering Market"></label>
-        <label>Seed keyword<input id="kwSeed" type="text" placeholder="genetic engineering market"></label>
         <label>Location
-          <select id="kwLocation">
+          <select id="opLocation">
             <option value="0">Global</option>
             <option value="2840">United States</option>
             <option value="2826">United Kingdom</option>
@@ -65,32 +63,43 @@
             <option value="2784">United Arab Emirates</option>
           </select>
         </label>
-      </div>
-      <div class="grid2">
-        <label>Competitor pages to mine from the SERP
-          <select id="kwDepth">
-            <option value="0">None</option>
-            <option value="2">Top 2</option>
-            <option value="3" selected>Top 3</option>
-            <option value="5">Top 5</option>
+        <label>Depth per competitor
+          <select id="opPages">
+            <option value="1" selected>1 page (any Mangools plan)</option>
+            <option value="2">2 pages (paid plans)</option>
+            <option value="3">3 pages (paid plans)</option>
           </select>
         </label>
-        <label>Extra competitor page URLs (optional, one per line)<textarea id="kwCompUrls" rows="2" placeholder="https://www.marketsandmarkets.com/Market-Reports/..."></textarea></label>
+        <label>Send automatically to analyst verification
+          <select id="opAuto">
+            <option value="0">Off (I will pick)</option>
+            <option value="5">Top 5 High-priority topics</option>
+            <option value="10" selected>Top 10 High-priority topics</option>
+            <option value="20">Top 20 High-priority topics</option>
+          </select>
+        </label>
+      </div>
+      <div class="row" id="opComps">
+        <span class="hint">Competitors:</span>
+        <label class="chk"><input type="checkbox" value="marketsandmarkets.com" checked> marketsandmarkets.com</label>
+        <label class="chk"><input type="checkbox" value="precedenceresearch.com" checked> precedenceresearch.com</label>
+        <label class="chk"><input type="checkbox" value="futuremarketinsights.com" checked> futuremarketinsights.com</label>
+        <label class="chk"><input type="checkbox" value="marketresearchfuture.com" checked> marketresearchfuture.com</label>
+        <label class="chk"><input type="checkbox" value="persistencemarketresearch.com" checked> persistencemarketresearch.com</label>
       </div>
       <div class="row">
-        <button id="kwRun" class="btn primary" type="button">Run keyword research</button>
-        <span class="hint">Mangools allows about 3 calls per 30 seconds, so mining competitor pages takes a minute or two.</span>
+        <button id="opRun" class="btn primary" type="button">Find opportunities</button>
+        <span class="hint">Uses one Mangools keyword lookup per competitor per page, about 11 seconds apart.</span>
       </div>
-      <div id="kwProgress" class="progress"></div>
+      <div id="opProgress" class="progress"></div>
     </div>
-    <div id="kwSerp" class="card hidden"></div>
-    <div id="kwResults" class="card hidden"></div>
+    <div id="opResults" class="card hidden"></div>
   </div>
 
   <div id="kw-verify" class="sub">
     <div class="card">
       <h2>Analyst verification</h2>
-      <p class="lead">Mark each keyword Good or Not good and give the reason it suits, or does not suit, our page. The AI reason is pre-filled for you to edit.</p>
+      <p class="lead">Mark each keyword Good or Not good and give the reason it suits, or does not suit, our page. Any SEO warning (another report already targets it, duplicate wording, country variant) is shown under the keyword. Use <b>Suggest more secondary keywords</b> to add keywords from the pages ranking in Google's top 10.</p>
       <div class="row"><select id="kvGroup" class="grow"></select><button id="kvRefresh" class="btn" type="button">Refresh</button></div>
       <div id="kvTable"></div>
     </div>
@@ -112,7 +121,7 @@
   <div id="kw-list" class="sub">
     <div class="card">
       <h2>Research List</h2>
-      <p class="lead">Approved keywords, live status from the sitemap, and the latest live check.</p>
+      <p class="lead">Approved keywords, New report or Revamp, live status from the sitemap, and the latest live check.</p>
       <div class="row"><button id="klRefresh" class="btn" type="button">Refresh</button></div>
       <div id="klTable"></div>
     </div>
@@ -123,7 +132,7 @@
 <section id="tab-rd" class="tab">
   <div class="card">
     <h2>RD verification</h2>
-    <p class="lead">Paste your written RD to check keyword coverage, data consistency, grammar and facts, and to get external link suggestions with anchor texts.</p>
+    <p class="lead">Pick the approved report (its primary and secondary keywords fill in) and paste the RD. Every use of the primary and secondary keywords is highlighted in colour with a count, and the content is checked for data consistency, grammar and facts.</p>
     <div class="grid2">
       <label>Report from the Research List<select id="rdReport"><option value="">Select an approved report</option></select></label>
       <label>Report name<input id="rdName" type="text" placeholder="Genetic Engineering Market"></label>
@@ -158,7 +167,7 @@
 <section id="tab-dm" class="tab">
   <div class="card">
     <h2>DM optimization</h2>
-    <p class="lead">Adds H-tags, internal links from the live sitemaps and the infographic with its alt text, then gives you the meta title and meta description to paste into the CMS.</p>
+    <p class="lead">Adds H-tags, internal links from the live sitemaps and your images (each with its alt text inside the image's HTML only), then gives you the meta title and meta description to paste into the CMS.</p>
     <label>Keyword this content is about<input id="dmKeyword" type="text" placeholder="Genetic Engineering Market"></label>
     <div class="subtabs" data-group="dm">
       <button type="button" data-sub="dm-editor" class="active">1 · Content</button>
@@ -169,8 +178,11 @@
     <div id="dm-editor" class="sub active">
       <div class="paste-head"><span>Paste content</span><span class="paste-stats" id="dmStats"></span><button id="dmClear" class="btn tiny ghost" type="button">Clear</button></div>
       <div id="dmContent" class="paste" contenteditable="true" data-placeholder="Paste the full RD here (from Google Docs or Word to keep links, lists and the segmentation table)."></div>
+
+      <div class="paste-head"><span><b>Images</b> <span class="hint">The first image is the infographic. Alt text goes only into the image's HTML alt attribute and is never shown as text on the page.</span></span><button id="dmAddImg" class="btn tiny" type="button">+ Add another image</button></div>
+      <div id="dmImages"></div>
+
       <div class="grid2">
-        <label>Infographic image URL (.jpg or .webp)<input id="dmImage" type="url" placeholder="https://app.kingsresearch.com/uploads/media/....jpg"></label>
         <label>Internal links to add
           <select id="dmCount">
             <option value="4">4</option>
@@ -180,20 +192,18 @@
             <option value="12">12</option>
           </select>
         </label>
-      </div>
-      <div class="row">
-        <label class="chk"><input type="checkbox" id="dmStdImgs" checked> Add the standard Research Methodology and Why Kings Research images</label>
+        <div class="row end"><label class="chk"><input type="checkbox" id="dmStdImgs" checked> Add the standard Research Methodology and Why Kings Research images</label></div>
       </div>
       <div class="row">
         <button id="dmOptimize" class="btn primary" type="button">Optimize</button>
-        <span class="hint">You can drag the infographic to a new position in Preview.</span>
+        <span class="hint">You can drag each image to a new position in Preview.</span>
       </div>
       <div id="dmProgress" class="progress"></div>
       <div id="dmLinksTable"></div>
     </div>
 
     <div id="dm-preview" class="sub">
-      <p class="hint">Drag the infographic, or use the arrows on it, to change where it sits. Links open in a new tab.</p>
+      <p class="hint">Drag each image, or use the arrows on it, to change where it sits. Links open in a new tab.</p>
       <div id="dmPreview" class="kr-preview"><p class="hint">Run Optimize first.</p></div>
     </div>
 
@@ -215,7 +225,6 @@
 
       <div class="group">
         <div class="paste-head"><span><b>Description: HTML source code</b></span><button id="dmCopyHtml" class="btn tiny primary" type="button">Copy HTML</button></div>
-        <p class="hint" id="dmAltNote"></p>
         <textarea id="dmSource" class="code" rows="22" readonly spellcheck="false"></textarea>
       </div>
 
@@ -228,7 +237,7 @@
 <section id="tab-publish" class="tab">
   <div class="card">
     <h2>Publish check</h2>
-    <p class="lead">Checks the preview page before it goes live: facts, data consistency, FAQs, infographic, spelling and grammar, meta, links, Report Snapshot and Table of Contents.</p>
+    <p class="lead">Checks the preview page before it goes live: data consistency, facts, FAQs, infographic numbers against the content, spelling and grammar, meta and links. The Report Snapshot and Table of Contents are checked in Live Tracker once the report is live.</p>
     <label>Preview URL<input id="pcUrl" type="url" placeholder="https://www.kingsresearch.com/preview/report/digital-provenance-market-3188"></label>
     <div class="row">
       <button id="pcRun" class="btn primary" type="button">Run publish check</button>
@@ -243,7 +252,7 @@
 <section id="tab-live" class="tab">
   <div class="card">
     <h2>Live tracker</h2>
-    <p class="lead">Sync the reports sitemap to see which approved reports are live and when they went live, then run the live check.</p>
+    <p class="lead">Sync the reports sitemap to see which approved reports and revamps are live and when they went live, then run the live check (all checks, including Report Snapshot and Table of Contents).</p>
     <div class="row">
       <button id="lvSync" class="btn primary" type="button">Sync reports sitemap</button>
       <button id="lvRefresh" class="btn" type="button">Refresh list</button>
@@ -274,7 +283,12 @@
   <div class="dlg-head"><h2>Setup</h2><button type="button" class="btn tiny ghost" id="setClose">Close</button></div>
   <p id="setMsg" class="note hidden"></p>
   <label>Team access key <span class="hint">(only if your admin set one)</span><input id="setKey" type="password"></label>
-  <div class="row"><button id="setSaveKey" class="btn" type="button">Save key</button><button id="setInit" class="btn primary" type="button">Create / repair sheet tabs</button></div>
+  <div class="row">
+    <button id="setSaveKey" class="btn" type="button">Save key</button>
+    <button id="setInit" class="btn primary" type="button">Create / repair sheet tabs</button>
+    <button id="setRepair" class="btn" type="button">Fix existing keyword rows</button>
+  </div>
+  <p class="hint">"Fix existing keyword rows" fills Suggested Placement and the SEO Check (another report already targets it, duplicate wording, country variant) for keywords saved before these were filled automatically.</p>
   <div id="setStatus"></div>
 </dialog>
 

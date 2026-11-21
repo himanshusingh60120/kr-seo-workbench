@@ -1,85 +1,70 @@
 # Kings Research SEO Workbench
 
-One tool for the whole report pipeline: **Keywords → RD → Content → DM → Publish Check → Live Tracker**, with every step logged to the Google Sheet **KR-Process**. Nothing runs on a schedule: every action starts when someone pastes something or clicks a button.
+One tool for the whole report pipeline: **Keywords → RD → Content → DM → Publish Check → Live Tracker**, with every step logged to the Google Sheet **KR-Process**. Nothing runs on a schedule: every action starts when someone clicks a button.
 
 ## What each tab does
 
 | Tab | What it does | Sheet tab |
 |---|---|---|
-| **Keywords** | 1) Research: Mangools KWFinder (related keywords), SERPChecker (who ranks, KD), keywords that competitor pages rank for (MarketsandMarkets, MRFR, FMI, Precedence, Persistence), then AI picks one primary and 8-15 secondary keywords with a reason why each helps our page. 2) Analyst marks each Good / Not good with a reason. 3) Manager (habi@kingsresearch.com + PIN) approves; approved keywords go to the Research List with the approval date. | Keywords, Research List |
-| **RD** | Paste the written RD: secondary-keyword coverage, data consistency (CAGR maths, repeated figures, "majority" < 50%), grammar and house style, structure, web fact-check of dated claims, external link suggestions with anchor texts (from the sources found), status of existing links. | RD |
-| **Content** | Empty, reserved for the Content team. | Content |
-| **DM** | Enter the keyword, paste the content, add the infographic URL, click **Optimize**: H2/H3 tags in the house format, segmentation table, lists, internal links from the live sitemaps (KR-Interlinker logic), infographic with alt text (drag it in Preview), standard methodology images, then copy the source code, meta title and meta description. | DM |
-| **Publish Check** | Paste a `/preview/report/...` URL: checks data consistency, facts, FAQs (incl. key players vs key companies), infographic (reads the text in the image), spelling and grammar, meta and headings, links, Report Snapshot and Table of Contents. | Publish Check |
-| **Live Tracker** | **Sync reports sitemap** records every report URL and lastmod, detects new reports and marks Research List reports as live (with live date). **Run live check** runs the same checks on the live page; issues are written one column per category. | Sitemap, Live Check, Research List |
+| **Keywords → 1 · Find opportunities** | Mangools keyword-gap analysis of kingsresearch.com against the 5 competitors, grouped into report topics and checked against our reports sitemap: not published → **New report**, published but not ranking → **Revamp**. AI prioritises topics; the top High-priority ones go to analyst verification automatically. Sort by priority, volume, all-variants volume, KD or competitors. **More keywords** reads the pages ranking in Google's top 10 for the topic and adds secondary keywords from them (with Mangools volumes). The last scan reloads from the sheet. | Opportunities, Keywords |
+| **Keywords → 2 · Analyst verification** | Good / Not good + reason per keyword (secondaries sorted by volume, SEO warnings shown). **Suggest more secondary keywords** reads the top-10 pages and adds the ticked ones to the group. | Keywords |
+| **Keywords → 3 · Manager approval** | habi@kingsresearch.com + PIN approves → Research List with the approval date. | Research List |
+| **RD** | Paste the RD: every use of the primary and secondary keywords **highlighted in colour with a count**; plus data consistency, grammar, structure, fact-check, external link suggestions, link status. | RD, Fact Cache |
+| **Content** | Reserved for the Content team. | Content |
+| **DM** | H2/H3, segmentation table, internal links, **one or more images** (first = infographic; each draggable in Preview; alt text only inside each image's HTML `alt` attribute), CMS boxes for Meta Title, Meta Description and HTML. | DM |
+| **Publish Check** | Preview URL → data consistency, facts, FAQs, infographic numbers vs content, spelling, meta, links. | Publish Check, Fact Cache |
+| **Live Tracker** | Sync the reports sitemap → reports and revamps marked Live with their date → live checks (everything above **plus Report Snapshot and Table of Contents**). | Sitemap, Live Check, Research List, Fact Cache |
 
-All sheet tabs are created automatically the first time the tool writes (or via **Setup → Create / repair sheet tabs**).
+## Keeping the AI cost down
 
-## Deploy (download → GitHub → Vercel)
+The fact-check used to be about 90% of the AI bill, because every run searched the web again for every claim. It now works like this:
 
-1. **Download** this `kr-seo-workbench` folder from Google Drive (right-click → Download) and unzip it. Keep the structure:
-   ```
-   kr-seo-workbench/
-   ├── api/            serverless functions (setup, keywords, rd, dm, sitemap, pagecheck)
-   ├── lib/            shared server code
-   ├── public/         the web app (index.html, styles.css, js/)
-   ├── package.json
-   ├── vercel.json
-   ├── .env.example
-   └── .gitignore
-   ```
-   If your unzip tool hides dot-files, check that `.gitignore` and `.env.example` are there.
-2. **GitHub**: create a new private repository and upload the folder contents (or `git init && git add . && git commit -m "KR SEO Workbench" && git push`). Never commit a real `.env`.
-3. **Vercel**: Add New Project → import the repository → Framework preset **Other** → leave build settings empty → add the environment variables below → **Deploy**.
+1. **Each fact is checked once.** Every checked sentence is stored in the **Fact Cache** sheet tab with its verdict and source. When the same sentence appears again (second RD run, Publish Check, Live Check), the saved verdict is shown at no cost. A sentence that has been edited counts as new and is checked again. Verdicts are reused for 180 days (`FACT_CACHE_DAYS`).
+2. **Only public facts are checked.** Plain rules pick the sentences that could hold an outside fact (a month-and-year date, or words such as announced, acquired, approved), and **Jev** labels each one: public fact, our own estimate, or general statement. Kings Research's own market numbers are not sent to the web; the data-consistency check covers them.
+3. **Lite engine, free search.** A new fact gets one web search through **Tavily** (1,000 free searches every month), and Jev judges whether each result confirms it, conflicts with it, or is unrelated. Below the confidence threshold (`FACT_MIN_CONFIDENCE`, default 0.8) the claim is marked **Check manually**, with the best source found.
+4. **If the search is not available** (no key, the month's free searches are used up, or the service is down), the tool does not switch to anything paid. It opens the page the sentence **already links to** and asks Jev whether that page backs the claim. A sentence with no source link is marked **Check manually** with "add a source link". This needs no search service, so it always works.
+5. **Deep check button.** Every claim in the results table has a **Deep check** button that re-checks that one claim with OpenAI web search (about 1 to 3 cents). Nothing else in the lite engine spends money on search. Use it when the lite engine is unsure, or when you want a suggested correction.
+6. **Unchanged RD.** If nothing has changed since the last "Verify content" (same content, keywords and links, within 24 hours, same browser), the saved results are shown. Hold **Shift** and click to force a full re-run.
+7. **Topic priority.** With a Jev key, keyword topics are prioritised by search volume and competitor counts (plain maths) plus Jev's judgment of whether the topic is a sellable report and how strong the commercial demand is. Set `DECISION_ENGINE=openai` to go back to the chat model.
 
-## Environment variables (Vercel → Settings → Environment Variables)
+**What the lite engine cannot do:** it reads the title and summary of each search result (or extracts of the linked page), not everything, and it cannot write a correction. A "Contradicted" from it is therefore shown as a warning, not an error, until a Deep check confirms it.
 
-Required:
+**Comparing the two engines before trusting lite:** set `FACT_ENGINE=both`. Each new claim is then checked by the deep engine (at the old cost), and the lite verdict is shown beside it in the claims table. Run it on a few RDs you have already checked by hand, then remove the variable.
 
-| Name | Where to get it |
-|---|---|
-| `OPENAI_API_KEY` | platform.openai.com → API keys |
-| `MANGOOLS_API_KEY` | mangools.com/api-token (free account works; paid plans give more lookups) |
-| `GOOGLE_SERVICE_ACCOUNT_EMAIL` | the `client_email` from the service-account JSON (see below) |
-| `GOOGLE_PRIVATE_KEY` | the `private_key` from the same JSON, pasted as-is including `-----BEGIN PRIVATE KEY-----` |
-| `MANAGER_PIN` | any PIN you give to habi@kingsresearch.com for approvals |
+Still done by gpt-4.1-mini, because they need written fixes or image reading: RD review, language checks, data consistency, FAQ check, infographic check, Report Snapshot and Table of Contents checks, meta suggestions, internal links and "More keywords".
 
-Optional: `GOOGLE_SHEET_ID` (defaults to KR-Process), `MANAGER_EMAIL` (default habi@kingsresearch.com), `TEAM_ACCESS_KEY` (locks the tool behind a shared key), `OPENAI_MODEL` / `OPENAI_VISION_MODEL` / `OPENAI_SEARCH_MODEL` (default `gpt-4.1-mini`), `OPENAI_WEB_SEARCH` (`false` to skip web fact-checks), `COMPETITORS`, `MANGOOLS_LANGUAGE_ID`, `SITE_BASE`, `APP_TIMEZONE`, `KR_COOKIE` (only if preview pages need a login). See `.env.example`.
+## Check rules (to keep false alarms out)
 
-After changing variables, redeploy.
+- Only real problems are reported; "consistent / no conflict" notes and vague "please confirm" items are dropped.
+- North America is always "U.S., Canada, and Mexico" (no "Rest of North America").
+- Superlatives are judged per segmentation category (the fastest deployment mode and the fastest technology can both be "fastest").
+- FAQ answers that repeat the description word for word are never flagged; extra explanation in an FAQ is fine.
+- Infographic: only numbers or statements that **contradict** the content are flagged. Masked values (XX.X%, X.XX%) and numbers the content doesn't mention are fine; styling is never flagged.
+- Table of Contents: company names are not expected there; website labels such as "Table Of Content" are ignored.
+- Fact-check: each claim is searched separately; competitor and other report-seller sites are never used as sources; a source must mention the organization (or a key term) of the claim, otherwise it is not used or suggested; in the deep engine a "correction" that repeats the claim counts as Supported; links on sites that block automated checks are not called broken.
 
-## Google Sheet access (one time)
+## SEO Check in the Keywords sheet
 
-1. Google Cloud Console → create (or pick) a project → **APIs & Services → Enable APIs** → enable **Google Sheets API**.
-2. **IAM & Admin → Service Accounts → Create service account** → open it → **Keys → Add key → JSON**. Copy `client_email` and `private_key` into Vercel.
-3. Open the **KR-Process** sheet → **Share** → add the service-account email as **Editor**.
-4. Open the tool → **Setup** → **Create / repair sheet tabs**. Setup also shows which variables are missing.
+Every saved secondary keyword gets an **SEO Check**: **Link instead** (main topic of another Kings Research report), **Duplicate** (same words in another order), **Low value** (country variant or "market research" phrasing) or **OK**.
 
-## Daily workflow
+## Deploy and environment
 
-1. **Researcher**: Keywords → Research → enter report name → Run → adjust → Save for analyst verification.
-2. **Research analyst**: Keywords → Analyst verification → Good / Not good + reason → Submit.
-3. **Manager (habi@kingsresearch.com)**: Keywords → Manager approval → enter email + PIN → Approve. The report lands in the Research List with the date.
-4. **RD writer**: RD → pick the report (keywords fill in) → paste the RD → Verify content → fix → Save to RD sheet.
-5. **DM**: DM → keyword, content, image URL → Optimize → Preview (move image) → Source code & meta → copy into the CMS → Save to DM sheet.
-6. **Before publishing**: Publish Check → paste the preview URL → fix what it reports.
-7. **After publishing**: Live Tracker → Sync reports sitemap → Run live check (or "Check all live reports not yet checked").
+1. Copy the updated files into your local folder, then `git add .`, `git commit -m "..."`, `git push`. Vercel redeploys automatically.
+2. Required Vercel variables: `OPENAI_API_KEY`, `MANGOOLS_API_KEY`, `GOOGLE_SERVICE_ACCOUNT_EMAIL`, `GOOGLE_PRIVATE_KEY`, `MANAGER_PIN`.
+3. Cost savers (recommended): ONE Jev key, either `TYPESAFE_API_KEY` (console.typesafe.ai) or `AI_GATEWAY_API_KEY` (Vercel AI Gateway), and `TAVILY_API_KEY` (tavily.com). `SERPER_API_KEY` is an optional backup search. Without a Jev key the tool uses OpenAI web search as before; the Fact Cache and the unchanged-RD saving still apply.
+4. Optional: `FACT_ENGINE`, `FACT_MIN_CONFIDENCE`, `FACT_CACHE_DAYS`, `FACT_TRIAGE`, `DECISION_ENGINE`, `JEV_MODEL`, `TEAM_ACCESS_KEY`, `GOOGLE_SHEET_ID`, `MANAGER_EMAIL`, `OPENAI_MODEL`, `OPENAI_VISION_MODEL`, `OPENAI_SEARCH_MODEL`, `OPENAI_WEB_SEARCH`, `COMPETITORS`, `MANGOOLS_LANGUAGE_ID`, `SITE_BASE`, `APP_TIMEZONE`, `KR_COOKIE`. See `.env.example`.
+5. Share KR-Process with the service-account email as Editor; enable the Google Sheets API.
+6. In the tool: **Setup → Create / repair sheet tabs** (this adds the **Fact Cache** tab), then **Fix existing keyword rows**. The Setup dialog shows which fact-check engine is active and whether the Jev and web search keys are set.
 
-## Notes and limits
+## Mangools lookups
 
-- **Mangools pacing**: the API allows about 3 calls per 30 seconds, so the browser waits ~11 s between calls and retries automatically on rate limits. Each lookup uses your Mangools quota (identical lookups within 24 h are free).
-- **Live date**: the sitemap has no publish date, so "Live Date" is the sitemap `lastmod` at the moment the report was first detected, and "Detected On" is the sync time. The first sync is a baseline; reports that appear in later syncs are flagged as new.
-- **Fact-checking** uses OpenAI web search. If web search is unavailable on your OpenAI account the tool falls back to model knowledge and says so on screen. Kings Research's own estimates (market size, CAGR, shares) are never "fact-checked" against the web; they are checked for internal consistency.
-- **Preview pages** must be reachable by the server. If they require a login, set `KR_COOKIE`.
-- **Timeouts**: each server call is limited to 60 s (works on the Vercel Hobby plan). Long checks are split into many small calls by the browser.
-- The infographic check sends the image URL to OpenAI vision; the image must be publicly reachable (app.kingsresearch.com uploads are).
-- Internal links come from `sitemap-reports.xml`, `sitemap-blogs.xml` and `sitemap-pr.xml`; the page never links to itself or to competitor domains.
+- Find opportunities: one lookup per competitor per page.
+- More keywords / Suggest more secondary keywords: two lookups (Google top 10 + volumes for the new keywords).
+- Calls are paced ~11 s apart (Mangools allows 3 per 30 s) and retried on rate limits.
 
-## Local development
+## Notes
 
-```
-npm i -g vercel
-cp .env.example .env.local   # fill in the values
-npm install
-vercel dev                   # http://localhost:3000
-```
+- Live date = sitemap `lastmod` when first detected; revamps go Live when lastmod is on or after the approval date.
+- Snapshot/TOC: the tool tries the link on the page, then the preview URL, then the live URL.
+- Each server call is limited to 60 s; long jobs are split into many calls by the browser.
+- A Deep check done after a Publish or Live check has been saved updates the Fact Cache, but not the row already written to the Publish Check or Live Check sheet.

@@ -1,6 +1,8 @@
 'use strict';
 
-// Syncs the reports sitemap into the "Sitemap" tab and marks Research List reports as live.
+// Syncs the reports sitemap into the "Sitemap" tab and updates the Research List:
+// - New reports: marked Live when a matching report URL appears in the sitemap.
+// - Revamps: marked Live once the existing report's lastmod is on or after the approval date.
 // Runs only when someone clicks "Sync reports sitemap" (no cron).
 
 const { handler, nowIST, slugify, titleCase } = require('../lib/http');
@@ -61,8 +63,25 @@ module.exports = handler({
     const research = await sheets.readTab('RESEARCH');
     const updates = [];
     const newlyLive = [];
+
     research.forEach((r) => {
+      const isRevamp = String(r['Action'] || '').toLowerCase() === 'revamp';
       if (r['Live Status'] === 'Live' && r['Live URL']) return;
+
+      if (isRevamp) {
+        const url = r['Existing URL'] || r['Live URL'];
+        if (!url) return;
+        const hit = byUrl.get(normUrl(url)) || bySlug.get(slugFromUrl(url)) || null;
+        const approved = String(r['Approval Date'] || '').slice(0, 10);
+        if (hit && approved && hit.lastmod && hit.lastmod >= approved) {
+          updates.push({ row: r._row, data: { 'Live Status': 'Live', 'Live URL': hit.url, 'Report ID': hit.id, 'Live Date': hit.lastmod, 'Detected On': now, 'Last Live Check': '', 'Live Check Summary': '' } });
+          newlyLive.push({ report: r['Report Name'] + ' (revamp)', url: hit.url, liveDate: hit.lastmod });
+        } else if (r['Live Status'] !== 'Revamp pending') {
+          updates.push({ row: r._row, data: { 'Live Status': 'Revamp pending', 'Live URL': hit ? hit.url : url } });
+        }
+        return;
+      }
+
       let hit = null;
       if (r['Live URL']) hit = byUrl.get(normUrl(r['Live URL'])) || bySlug.get(slugFromUrl(r['Live URL'])) || null;
       if (!hit) {
