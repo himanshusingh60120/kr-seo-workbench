@@ -1,8 +1,8 @@
 'use strict';
 /* In-house keywords. Loaded by main.js. Shown only to the people allowed to add them (the server decides).
    They paste report keywords, click "Check keywords" and see, for each one, the search volume, the scope
-   (new report, revamp, or a similar report exists; already in the pipeline or not) and one line on why to take
-   it up. Nothing is saved until they click "Add selected to the pipeline". */
+   (new report, revamp, or a similar report exists; already in the pipeline or not), one line on why to take
+   it up, and its must-use secondary keywords. Nothing is saved until they click "Add selected to the pipeline". */
 (function () {
   const KR = window.KR;
   const { $, $$, esc, fmtNum } = KR;
@@ -25,19 +25,28 @@
     return h;
   }
 
+  function mustHtml(r) {
+    const list = (r.mustHave || []).filter((k) => k.mustUse);
+    const more = (r.mustHave || []).length - list.length;
+    if (!list.length) return '<span class="muted small">The standard report searches will be added.</span>';
+    return list.map((k) => '<div class="small">' + esc(k.kw) + (k.sv !== null && k.sv !== undefined ? ' <span class="muted">(' + fmtNum(k.sv) + ')</span>' : '') + '</div>').join('') +
+      (more > 0 ? '<div class="muted small">+ ' + more + ' more search variant' + (more === 1 ? '' : 's') + '</div>' : '');
+  }
+
   function render(notes) {
     const box = $('#ihTable');
     if (!H.rows.length) { box.innerHTML = notes || ''; return; }
     box.innerHTML = (notes || '') +
-      '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Add</th><th>Report</th><th>Volume</th><th>KD</th><th>Scope</th><th>Why take it up (you can edit this)</th></tr></thead><tbody>' +
+      '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Add</th><th>Report</th><th>Volume</th><th>Difficulty</th><th>Scope</th><th>Must-use secondary keywords</th><th>Why take it up (you can edit this)</th></tr></thead><tbody>' +
       H.rows.map((r, i) => '<tr>' +
         '<td><input type="checkbox" data-ihsel="' + i + '"' + (r.inPipeline ? ' disabled title="Already in the pipeline"' : ' checked') + '></td>' +
         '<td><b>' + esc(r.title) + '</b><div class="muted small">' + esc(r.keyword) + '</div></td>' +
-        '<td>' + fmtNum(r.sv) + '</td><td>' + fmtNum(r.kd) + '</td>' +
+        '<td>' + fmtNum(r.sv) + '</td><td>' + (KR.kdHtml ? KR.kdHtml(r.kd) : fmtNum(r.kd)) + '</td>' +
         '<td>' + scopeHtml(r, i) + '</td>' +
+        '<td>' + mustHtml(r) + '</td>' +
         '<td><textarea rows="2" data-ihwhy="' + i + '">' + esc(r.why) + '</textarea></td></tr>').join('') +
       '</tbody></table></div>' +
-      '<div class="row"><span class="hint">Volumes are for ' + esc(H.locLabel) + '. Each keyword becomes one report topic and goes to analyst verification, where secondary keywords can be added.</span><span class="grow"></span>' +
+      '<div class="row"><span class="hint">Volumes are for ' + esc(H.locLabel) + '. Each keyword becomes one report topic with its must-use keywords and goes to analyst verification, where more secondary keywords can be added.</span><span class="grow"></span>' +
       '<button id="ihAdd" class="btn primary" type="button">Add selected to the pipeline</button></div>';
   }
 
@@ -48,14 +57,14 @@
     const loc = locSel ? Number(locSel.value) || 0 : 0;
     H.locLabel = locSel && locSel.selectedOptions[0] ? locSel.selectedOptions[0].textContent : 'Global';
     const prog = KR.progress('#ihProgress');
-    const s = prog.step('Getting search volumes, checking our published reports and the pipeline…');
+    const s = prog.step('Getting search volumes and must-use keywords, checking our published reports and the pipeline…');
     KR.busy(btn, true, 'Checking…');
     try {
-      const r = await KR.api('keywords', 'inhouse', { keywords, location_id: loc });
+      const r = KR.mgPaced ? await KR.mgPaced('keywords', 'inhouse', { keywords, location_id: loc }, prog) : await KR.api('keywords', 'inhouse', { keywords, location_id: loc });
       H.rows = r.rows || [];
       s.done('Checked ' + H.rows.length + ' keyword' + (H.rows.length === 1 ? '' : 's') + '. Nothing has been added yet.');
       let notes = '';
-      if (r.volumeNote) notes += '<p class="note">Search volumes could not be loaded (' + esc(r.volumeNote) + '). You can still add the keywords.</p>';
+      if (r.volumeNote) notes += '<p class="note">Search volumes could not be loaded (' + esc(r.volumeNote) + '). You can still add the keywords; the standard report searches become their must-use keywords.</p>';
       if (r.whyNote) notes += '<p class="note">The reasons could not be written (' + esc(r.whyNote) + '). Type them in the last column.</p>';
       if (r.skipped) notes += '<p class="note">Only the first 25 keywords were checked. Add the other ' + r.skipped + ' in a second batch.</p>';
       render(notes);
@@ -77,7 +86,7 @@
       const sel = $('#ihTable select[data-ihact="' + i + '"]');
       const why = $('#ihTable textarea[data-ihwhy="' + i + '"]');
       const action = sel ? sel.value : r.action;
-      items.push({ keyword: r.keyword, title: r.title, sv: r.sv, kd: r.kd, cpc: r.cpc, action, existingUrl: action === 'Revamp' ? r.url : '', why: why ? why.value.trim() : r.why });
+      items.push({ keyword: r.keyword, title: r.title, sv: r.sv, kd: r.kd, cpc: r.cpc, action, existingUrl: action === 'Revamp' ? r.url : '', why: why ? why.value.trim() : r.why, mustHave: r.mustHave || [] });
     });
     if (!items.length) { KR.toast('Tick at least one keyword to add.', 'err'); return; }
     if (items.some((x) => !x.why)) { KR.toast('Every keyword needs a reason in the last column.', 'err'); return; }
@@ -105,7 +114,7 @@
     card.id = 'ihCard';
     card.className = 'card';
     card.innerHTML = '<h2>Add in-house keywords</h2>' +
-      '<p class="lead">Paste the report keywords chosen in-house, one per line (for example: smart helmet market). Click "Check keywords" to see the volume, the scope and the reason for each one. Nothing is added until you confirm.</p>' +
+      '<p class="lead">Paste the report keywords chosen in-house, one per line (for example: smart helmet market). Click "Check keywords" to see the volume, the scope, the must-use secondary keywords and the reason for each one. Nothing is added until you confirm.</p>' +
       '<textarea id="ihInput" rows="5" placeholder="smart helmet market&#10;green ammonia market"></textarea>' +
       '<div class="row"><span class="grow"></span><button id="ihCheck" class="btn primary" type="button">Check keywords</button></div>' +
       '<div id="ihProgress" class="progress"></div><div id="ihTable"></div>';

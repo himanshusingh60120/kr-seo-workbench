@@ -33,6 +33,8 @@
   <button type="button" data-tab="dm"><span class="ico" data-icon="link"></span>DM</button>
   <button type="button" data-tab="publish"><span class="ico" data-icon="check"></span>Publish Check</button>
   <button type="button" data-tab="live"><span class="ico" data-icon="stats"></span>Live Tracker</button>
+  <button type="button" data-tab="results"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3.5h14v17H5z"/><path d="M8 8.5l1.5 1.5L12 7.5M8 14.5l1.5 1.5L12 13.5M14 9h3M14 15h3"/></svg></span>Check results</button>
+  <button type="button" data-tab="credits" id="tabCredits" class="hidden"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 6.5v11M14.5 9.2c-.4-.9-1.4-1.4-2.5-1.4-1.4 0-2.5.8-2.5 1.9 0 2.6 5 1.4 5 4.1 0 1.1-1.1 1.9-2.5 1.9-1.2 0-2.2-.6-2.6-1.5"/></svg></span>API credits</button>
 </nav>
 
 <main>
@@ -41,6 +43,7 @@
 <section id="tab-keywords" class="tab active">
   <div class="subtabs" data-group="kw">
     <button type="button" data-sub="kw-opps" class="active">1 · Find opportunities</button>
+    <button type="button" data-sub="kw-ideas">Keyword ideas</button>
     <button type="button" data-sub="kw-verify">2 · Analyst verification</button>
     <button type="button" data-sub="kw-approve">3 · Manager approval</button>
     <button type="button" data-sub="kw-list">Research List</button>
@@ -49,7 +52,7 @@
   <div id="kw-opps" class="sub active">
     <div class="card">
       <h2>Find keyword opportunities</h2>
-      <p class="lead">One click finds the report keywords our competitors rank for and we don't, checks every topic against our reports sitemap, and proposes a <b>New report</b> or a <b>Revamp</b> of a published report, ranked by opportunity. Use <b>More keywords</b> on any topic to read the pages ranking in Google's top 10 and add secondary keywords from them.</p>
+      <p class="lead">One click finds the report keywords our competitors rank for and we don't, checks every topic against our reports sitemap, and proposes a <b>New report</b> or a <b>Revamp</b> of a published report, ranked by opportunity. Every topic sent to analyst verification gets its <b>must-use secondary keywords</b> (the searches people make for that report, with their volumes). Use <b>More keywords</b> on any topic to read the pages ranking in Google's top 10 and add secondary keywords from them.</p>
       <div class="grid3">
         <label>Location
           <select id="opLocation">
@@ -96,10 +99,14 @@
     <div id="opResults" class="card hidden"></div>
   </div>
 
+  <div id="kw-ideas" class="sub">
+    <div class="card" id="kxCard"><p class="hint">Loading…</p></div>
+  </div>
+
   <div id="kw-verify" class="sub">
     <div class="card">
       <h2>Analyst verification</h2>
-      <p class="lead">Mark each keyword Good or Not good and give the reason it suits, or does not suit, our page. Any SEO warning (another report already targets it, duplicate wording, country variant) is shown under the keyword. Use <b>Suggest more secondary keywords</b> to add keywords from the pages ranking in Google's top 10.</p>
+      <p class="lead">Mark each keyword Good or Not good and give the reason it suits, or does not suit, our page. Tick <b>Must use</b> on the secondary keywords the page has to contain (at least one); the RD, Publish and Live checks then require them. Any SEO warning (another report already targets it, duplicate wording, country variant) is shown under the keyword. Use <b>Suggest more secondary keywords</b> to add keywords from the pages ranking in Google's top 10.</p>
       <div class="row"><select id="kvGroup" class="grow"></select><button id="kvRefresh" class="btn" type="button">Refresh</button></div>
       <div id="kvTable"></div>
     </div>
@@ -108,10 +115,10 @@
   <div id="kw-approve" class="sub">
     <div class="card">
       <h2>Manager approval</h2>
-      <p class="lead">Approved keywords move to the Research List with the approval date.</p>
+      <p class="lead">Approved keywords move to the Research List with the approval date and the must-use keywords. Approval uses the account you are signed in with, plus the manager PIN.</p>
       <div class="grid3">
-        <label>Manager email<input id="kaEmail" type="email" placeholder="habi@kingsresearch.com"></label>
         <label>Manager PIN<input id="kaPin" type="password" autocomplete="current-password"></label>
+        <div></div>
         <div class="row end"><button id="kaRefresh" class="btn" type="button">Refresh</button></div>
       </div>
       <div id="kaList"></div>
@@ -121,7 +128,7 @@
   <div id="kw-list" class="sub">
     <div class="card">
       <h2>Research List</h2>
-      <p class="lead">Approved keywords, New report or Revamp, live status from the sitemap, and the latest live check.</p>
+      <p class="lead">Approved keywords, New report or Revamp, must-use keywords, live status from the sitemap, and the latest live check.</p>
       <div class="row"><button id="klRefresh" class="btn" type="button">Refresh</button></div>
       <div id="klTable"></div>
     </div>
@@ -132,14 +139,15 @@
 <section id="tab-rd" class="tab">
   <div class="card">
     <h2>RD verification</h2>
-    <p class="lead">Pick the approved report (its primary and secondary keywords fill in) and paste the RD. Every use of the primary and secondary keywords is highlighted in colour with a count, and the content is checked for data consistency, grammar and facts.</p>
+    <p class="lead">Pick the approved report (its primary, secondary and must-use keywords fill in) and paste the RD. Every use of the keywords is highlighted in colour with a count, a missing must-use keyword is reported as an error, and the content is checked for data consistency, grammar and facts. Each check is saved so the whole team can read it in <b>Check results</b>.</p>
     <div class="grid2">
       <label>Report from the Research List<select id="rdReport"><option value="">Select an approved report</option></select></label>
       <label>Report name<input id="rdName" type="text" placeholder="Genetic Engineering Market"></label>
     </div>
-    <div class="grid2">
+    <div class="grid3">
       <label>Primary keyword<input id="rdPrimary" type="text"></label>
-      <label>Secondary keywords (one per line or comma separated)<textarea id="rdSecondary" rows="3"></textarea></label>
+      <label>Must-use keywords (one per line)<textarea id="rdMust" rows="3"></textarea></label>
+      <label>Other secondary keywords (one per line or comma separated)<textarea id="rdSecondary" rows="3"></textarea></label>
     </div>
     <div class="paste-head"><span>Written content</span><span class="paste-stats" id="rdStats"></span><button id="rdClear" class="btn tiny ghost" type="button">Clear</button></div>
     <div id="rdContent" class="paste" contenteditable="true" data-placeholder="Paste the RD here, straight from Google Docs or Word so the hyperlinks are kept."></div>
@@ -147,7 +155,7 @@
       <button id="rdRun" class="btn primary" type="button">Verify content</button>
       <label class="chk"><input type="checkbox" id="rdWeb" checked> Verify facts on the web</label>
       <span class="grow"></span>
-      <button id="rdSave" class="btn" type="button" disabled>Save to RD sheet</button>
+      <button id="rdSave" class="btn" type="button" disabled>Save to RD sheet again</button>
     </div>
     <div id="rdProgress" class="progress"></div>
   </div>
@@ -167,7 +175,7 @@
 <section id="tab-dm" class="tab">
   <div class="card">
     <h2>DM optimization</h2>
-    <p class="lead">Adds H-tags, internal links from the live sitemaps and your images (each with its alt text inside the image's HTML only), then gives you the meta title and meta description to paste into the CMS.</p>
+    <p class="lead">Chooses the H2 and H3 headings from the pasted content itself, adds internal links from the live sitemaps and your images (each with its alt text inside the image's HTML only), then gives you the meta title and meta description, built from the content's own figures, to paste into the CMS.</p>
     <label>Keyword this content is about<input id="dmKeyword" type="text" placeholder="Genetic Engineering Market"></label>
     <div class="subtabs" data-group="dm">
       <button type="button" data-sub="dm-editor" class="active">1 · Content</button>
@@ -196,9 +204,10 @@
       </div>
       <div class="row">
         <button id="dmOptimize" class="btn primary" type="button">Optimize</button>
-        <span class="hint">You can drag each image to a new position in Preview.</span>
+        <span class="hint">You can drag each image to a new position in Preview, and change any heading below after Optimize.</span>
       </div>
       <div id="dmProgress" class="progress"></div>
+      <div id="dmHeadings"></div>
       <div id="dmLinksTable"></div>
     </div>
 
@@ -209,6 +218,7 @@
 
     <div id="dm-source" class="sub">
       <p class="lead">Copy each box into the matching field in the CMS.</p>
+      <p id="dmFigures" class="note hidden"></p>
 
       <div class="group">
         <div class="paste-head"><span><b>Meta Title</b> <span class="count" id="dmTitleCount"></span></span><button id="dmCopyTitle" class="btn tiny primary" type="button">Copy meta title</button></div>
@@ -220,7 +230,7 @@
         <textarea id="dmMetaDesc" rows="3" spellcheck="true"></textarea>
       </div>
 
-      <div class="row"><button id="dmMetaAi" class="btn tiny ghost" type="button">More title and description options (AI)</button></div>
+      <div class="row"><button id="dmMetaAi" class="btn tiny ghost" type="button">More title and description options (AI, using only the content's figures)</button></div>
       <div id="dmMetaSuggest"></div>
 
       <div class="group">
@@ -237,7 +247,7 @@
 <section id="tab-publish" class="tab">
   <div class="card">
     <h2>Publish check</h2>
-    <p class="lead">Checks the preview page before it goes live: data consistency, facts, FAQs, infographic numbers against the content, spelling and grammar, meta and links. The Report Snapshot and Table of Contents are checked in Live Tracker once the report is live.</p>
+    <p class="lead">Checks the preview page before it goes live: data consistency, facts, FAQs, infographic numbers against the content, spelling and grammar, meta, the report's primary and must-use keywords, and links. The Report Snapshot and Table of Contents are checked in Live Tracker once the report is live.</p>
     <label>Preview URL<input id="pcUrl" type="url" placeholder="https://www.kingsresearch.com/preview/report/digital-provenance-market-3188"></label>
     <div class="row">
       <button id="pcRun" class="btn primary" type="button">Run publish check</button>
@@ -252,7 +262,7 @@
 <section id="tab-live" class="tab">
   <div class="card">
     <h2>Live tracker</h2>
-    <p class="lead">Sync the reports sitemap to see which approved reports and revamps are live and when they went live, then run the live check (all checks, including Report Snapshot and Table of Contents).</p>
+    <p class="lead">Sync the reports sitemap to see which approved reports and revamps are live and when they went live, then run the live check (all checks, including the report keywords, Report Snapshot and Table of Contents).</p>
     <div class="row">
       <button id="lvSync" class="btn primary" type="button">Sync reports sitemap</button>
       <button id="lvRefresh" class="btn" type="button">Refresh list</button>
@@ -271,6 +281,37 @@
     <div id="lvProgress" class="progress"></div>
   </div>
   <div id="lvResults"></div>
+</section>
+
+<!-- ===================== CHECK RESULTS ===================== -->
+<section id="tab-results" class="tab">
+  <div class="card">
+    <h2>Check results</h2>
+    <p class="lead">Every RD, Publish and Live check run by the check team, with all of its findings. Everyone signed in can read them; only the check team can run checks.</p>
+    <p id="resTeam" class="hint"></p>
+    <div class="row">
+      <select id="resKind" style="width:auto;margin:0">
+        <option value="">All checks</option>
+        <option value="rd">RD checks</option>
+        <option value="publish">Publish checks</option>
+        <option value="live">Live checks</option>
+      </select>
+      <input id="resQuery" type="text" class="grow" placeholder="Filter by report, URL or person">
+      <button id="resRefresh" class="btn" type="button">Refresh</button>
+    </div>
+    <div id="resList"></div>
+  </div>
+  <div id="resDetail"></div>
+</section>
+
+<!-- ===================== API CREDITS ===================== -->
+<section id="tab-credits" class="tab">
+  <div class="card">
+    <h2>API credits</h2>
+    <p class="lead">What the tool has used from each paid service, who used it and for what. Mangools lookups left come live from Mangools; costs are estimates from the token counts.</p>
+    <div class="row"><button id="crRefresh" class="btn" type="button">Refresh</button></div>
+    <div id="crBody"><p class="hint">Open this tab to load the counter.</p></div>
+  </div>
 </section>
 
 </main>

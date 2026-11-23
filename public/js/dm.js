@@ -1,12 +1,15 @@
 'use strict';
-/* DM tab: structure pasted content into the Kings Research report HTML format (H2/H3, segmentation table,
-   lists), add internal links (KR-Interlinker logic), place one or more draggable images (alt text only inside
-   each image's HTML alt attribute), and produce the CMS boxes: meta title, meta description and HTML source. */
+/* DM tab: structure pasted content into the Kings Research report HTML format. The H2 and H3 headings are chosen
+   from the pasted content itself (AI reads the whole text; the standard section names are only the fallback), and
+   every heading can be changed afterwards in "Headings". Also: segmentation table, lists, internal links
+   (KR-Interlinker logic), one or more draggable images (alt text only inside each image's HTML alt attribute), and
+   the CMS boxes. The meta title and description are built from the figures in the pasted content (market size,
+   years, CAGR, forecast period), never from a template with invented numbers. */
 (function () {
   const KR = window.KR;
   const { $, $$, esc } = KR;
   const B = KR.blocks;
-  const D = (KR.state.dm = { units: [], links: [], imgs: [], keyword: '', period: '2026-2033' });
+  const D = (KR.state.dm = { units: [], links: [], imgs: [], keyword: '', period: '2026-2033', figures: {}, headingSource: '' });
 
   const MONTHS = 'January|February|March|April|May|June|July|August|September|October|November|December';
   const H2_SET = ['market overview', 'key market highlights', 'market dynamics', 'market segmentation', 'segmental analysis', 'regional analysis', 'competitive landscape', 'research methodology', 'frequently asked questions'];
@@ -103,13 +106,46 @@
     return '<table>\n<tbody>\n' + rows.map((r) => '<tr>' + r.map((c) => '<td>' + esc(c) + '</td>').join('') + '</tr>').join('\n') + '\n</tbody>\n</table>';
   }
 
+  // ---------- headings chosen from the content (AI) ----------
+  // Every pasted block is summarised for the AI: SHORT lines can be headings, LONG paragraphs, LIST items and
+  // TABLE rows are context. The AI answers h2 / h3 / p for each SHORT or HEADING block.
+  function blockKind(b) {
+    if (b.kind === 'table') return 'TABLE';
+    if (b.kind === 'li') return 'LIST';
+    if (b.kind === 'h') return 'HEADING' + b.level;
+    return String(b.text || '').trim().length <= 160 ? 'SHORT' : 'LONG';
+  }
+
+  function blockSummary(b, i) {
+    const text = b.kind === 'table' ? (b.rows || []).slice(0, 3).map((r) => r.join(' | ')).join(' / ') : String(b.text || '');
+    return { i, kind: blockKind(b), len: text.length, text: text.replace(/\s+/g, ' ').slice(0, 160) };
+  }
+
+  // Which part of the report an H2 starts (used for lists, links and the meta figures).
+  function sectionFor(text) {
+    const t = String(text || '').toLowerCase();
+    if (/segmentation/.test(t)) return 'segmentation';
+    if (/overview/.test(t)) return 'overview';
+    if (/highlight/.test(t)) return 'highlights';
+    if (/dynamic|driver|restraint|opportunit|challenge|trend/.test(t)) return 'dynamics';
+    if (/segment/.test(t)) return 'segmental';
+    if (/region|geograph/.test(t)) return 'regional';
+    if (/competiti|key (companies|players)/.test(t)) return 'competitive';
+    if (/methodolog/.test(t)) return 'methodology';
+    if (/frequently asked|faq/.test(t)) return 'faq';
+    return 'other';
+  }
+
   // ---------- classify pasted blocks into report units ----------
-  function classify(raw, keyword) {
+  // levels: Map(block index -> 'h2' | 'h3' | 'p') from the AI, or null to use the standard section names.
+  // better: Map(block index -> suggested wording) from the AI.
+  function classify(raw, keyword, levels, better) {
     const units = [];
     let section = 'intro';
     let h2Count = 0;
     let lastH3 = '';
     let seg = null;
+    const ai = levels instanceof Map && levels.size > 0;
     const monthRe = new RegExp('^In (' + MONTHS + ') \\d{4},');
     const pushLi = (html, text, listId) => {
       const last = units[units.length - 1];
@@ -120,30 +156,41 @@
       if (seg && seg.length) units.push({ type: 'table', rows: tokensToRows(seg), section: 'segmentation' });
       seg = null;
     };
-    raw.forEach((b) => {
+    const heading = (type, text, idx) => ({ type, text, section, src: idx, isHeading: true, better: (better && better.get(idx)) || '' });
+    raw.forEach((b, idx) => {
       if (b.kind === 'table') { flushSeg(); units.push({ type: 'table', rows: b.rows, section }); return; }
       const t = String(b.text || '').replace(/\s+/g, ' ').trim();
       if (!t) return;
       const clean = t.replace(/[:\uFF1A]\s*$/, '');
       const tl = clean.toLowerCase();
-      const short = clean.length <= 90 && b.kind !== 'li';
-      const isH2 = short && (H2_SET.indexOf(tl) >= 0 || (h2Count === 0 && /\boverview$/i.test(clean)));
+      const lvl = ai ? levels.get(idx) : '';
+      let isH2;
+      if (ai) {
+        isH2 = lvl === 'h2';
+      } else {
+        const short = clean.length <= 90 && b.kind !== 'li';
+        isH2 = short && (H2_SET.indexOf(tl) >= 0 || (h2Count === 0 && /\boverview$/i.test(clean)));
+      }
       if (isH2) {
         flushSeg();
         h2Count++;
         lastH3 = '';
-        section = SECTION_OF[tl] || (/overview$/i.test(clean) ? 'overview' : 'other');
-        units.push({ type: 'h2', text: section === 'overview' && keyword ? keyword + ' Overview' : clean, section });
+        section = ai ? sectionFor(clean) : (SECTION_OF[tl] || (/overview$/i.test(clean) ? 'overview' : 'other'));
+        const text = section === 'overview' && keyword && tl.indexOf(keyword.toLowerCase()) < 0 ? keyword + ' Overview' : clean;
+        units.push(heading('h2', text, idx));
         return;
       }
       if (section === 'segmentation') { (seg = seg || []).push(clean); return; }
-      if (b.kind !== 'li' && (H3_SET.indexOf(tl) >= 0 || (/\?$/.test(clean) && clean.length <= 220) || (b.kind === 'h' && b.level >= 3))) {
-        units.push({ type: 'h3', text: clean, section });
+      const isH3 = ai
+        ? lvl === 'h3'
+        : (b.kind !== 'li' && (H3_SET.indexOf(tl) >= 0 || (/\?$/.test(clean) && clean.length <= 220) || (b.kind === 'h' && b.level >= 3)));
+      if (isH3) {
+        units.push(heading('h3', clean, idx));
         lastH3 = tl;
         return;
       }
-      if (b.kind === 'h') {
-        units.push({ type: b.level <= 2 ? 'h2' : 'h3', text: clean, section });
+      if (b.kind === 'h' && !(ai && lvl === 'p')) {
+        units.push(heading(b.level <= 2 ? 'h2' : 'h3', clean, idx));
         if (b.level > 2) lastH3 = tl;
         return;
       }
@@ -193,6 +240,46 @@
       } else out.push(units.length);
     }
     return out;
+  }
+
+  // ---------- headings editor ----------
+  function setHeading(k, change) {
+    const u = D.units[k];
+    if (!u || !u.isHeading) return;
+    if (change.text !== undefined) {
+      const t = String(change.text).replace(/\s+/g, ' ').trim();
+      if (t) {
+        u.text = t;
+        if (u.type === 'p') u.html = esc(t);
+      }
+    }
+    if (change.level) {
+      if (change.level === 'p') {
+        if (u.type !== 'p') { u.type = 'p'; u.html = esc(u.text); u.eligible = false; }
+      } else {
+        u.type = change.level;
+      }
+    }
+    renderDm();
+  }
+
+  function renderHeadings() {
+    const box = $('#dmHeadings');
+    if (!box) return;
+    const heads = D.units.map((u, k) => ({ u, k })).filter((x) => x.u.isHeading);
+    if (!D.units.length || !heads.length) { box.innerHTML = ''; return; }
+    const sel = (u, v) => (u.type === v ? ' selected' : '');
+    const sugg = heads.filter((x) => x.u.better && x.u.better !== x.u.text).length;
+    const h2 = heads.filter((x) => x.u.type === 'h2').length;
+    const h3 = heads.filter((x) => x.u.type === 'h3').length;
+    box.innerHTML = '<h3>Headings: ' + h2 + ' H2 and ' + h3 + ' H3 <span class="hint">(' + esc(D.headingSource || '') + ')</span></h3>' +
+      '<p class="hint">Change a level or the wording here; Preview and the HTML update straight away. "Text" turns a heading back into a normal paragraph.</p>' +
+      (sugg ? '<div class="row"><button type="button" class="btn tiny" data-hall="1">Use all ' + sugg + ' suggested wordings</button></div>' : '') +
+      '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Level</th><th>Heading</th><th>Suggested wording (AI, from the text below the heading)</th></tr></thead><tbody>' +
+      heads.map((x) => '<tr><td><select data-hlvl="' + x.k + '" style="width:auto;margin:0"><option value="h2"' + sel(x.u, 'h2') + '>H2</option><option value="h3"' + sel(x.u, 'h3') + '>H3</option><option value="p"' + sel(x.u, 'p') + '>Text</option></select></td>' +
+        '<td><input type="text" data-htxt="' + x.k + '" value="' + esc(x.u.text) + '" style="margin:0"></td>' +
+        '<td class="small">' + (x.u.better && x.u.better !== x.u.text ? esc(x.u.better) + ' <button type="button" class="btn tiny ghost" data-huse="' + x.k + '">Use</button>' : '') + '</td></tr>').join('') +
+      '</tbody></table></div>';
   }
 
   // ---------- image inputs ----------
@@ -437,29 +524,105 @@
   }
 
   function renderDm() {
+    renderHeadings();
     renderLinksTable();
     renderPreview();
     $('#dmSource').value = buildSource();
     updateCounters();
   }
 
-  function overviewText() {
-    return D.units.filter((u) => u.section === 'overview' && u.type === 'p').map((u) => u.text).join(' ');
+  // ---------- meta title and description from the content's own figures ----------
+  // The text where the headline figures live: everything before the first section, the Overview and the
+  // Key Market Highlights.
+  function figureText() {
+    return D.units.filter((u) => ['intro', 'overview', 'highlights'].indexOf(u.section) >= 0)
+      .map((u) => (u.items ? u.items.map((i) => i.text).join(' ') : (u.text || ''))).join(' ');
   }
 
-  function setMetaDefaults() {
-    const kw = D.keyword;
-    const end = String(D.period).split('-')[1] || '2033';
-    let title = kw + ' Trends, Growth & Insights ' + end;
-    if (title.length > 60) title = kw + ' Size, Share & Forecast ' + end;
-    if (title.length > 60) title = kw + ' Report ' + end;
-    const ov = overviewText().replace(/[\u2013\u2014]/g, '-');
-    const m = ov.match(/grow from USD ([\d.,]+ (?:trillion|billion|million)) in (\d{4}) to USD ([\d.,]+ (?:trillion|billion|million)) by (?:the end of )?(\d{4}),? (?:exhibiting|registering|growing at|at) (?:a )?CAGR of ([\d.]+) ?%/i);
-    const desc = m
-      ? 'The ' + KR.lowerKw(kw) + ' is projected to grow from USD ' + m[1] + ' in ' + m[2] + ' to USD ' + m[3] + ' by ' + m[4] + ', registering a CAGR of ' + m[5] + '%.'
-      : 'Explore the ' + KR.lowerKw(kw) + ' size, share, growth drivers, segments, regional trends and key companies, with forecasts to ' + end + '.';
-    $('#dmMetaTitle').value = title;
-    $('#dmMetaDesc').value = desc;
+  // Reads the market size by year, the CAGR and the forecast period, exactly as written.
+  function figuresFrom(text) {
+    const t = String(text || '').replace(/[\u2012\u2013\u2014\u2212]/g, '-').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ');
+    const f = {};
+    const usd = (n, u) => 'USD ' + n + ' ' + u.toLowerCase();
+    let m = t.match(/size (?:was valued at|is valued at|was estimated at|was estimated to be|stood at|was worth|was|is|reached)(?: valued at)?(?: approximately| around| about| nearly)? USD ([\d.,]+) (trillion|billion|million) in (\d{4})/i);
+    if (m) f.base = { label: usd(m[1], m[2]), year: m[3] };
+    m = t.match(/(?:grow|increase|rise|expand|climb)\w* from USD ([\d.,]+) (trillion|billion|million) in (\d{4}) to USD ([\d.,]+) (trillion|billion|million) by (?:the end of )?(\d{4})/i);
+    if (m) {
+      f.start = { label: usd(m[1], m[2]), year: m[3] };
+      f.end = { label: usd(m[4], m[5]), year: m[6] };
+    }
+    if (!f.end) {
+      m = t.match(/(?:reach|hit|attain|exceed|surpass|cross|touch|be worth|be valued at)\s+(?:a value of |a valuation of |approximately |around |about |nearly )?USD ([\d.,]+) (trillion|billion|million) by (?:the end of )?(\d{4})/i);
+      if (m) f.end = { label: usd(m[1], m[2]), year: m[3] };
+    }
+    m = t.match(/CAGR of ([\d.]+) ?%/i) || t.match(/([\d.]+) ?% CAGR/i);
+    if (m) f.cagr = m[1].replace(/\.$/, '');
+    m = t.match(/forecast period \(?(\d{4}) ?(?:-|to) ?(\d{4})\)?/i) || t.match(/\((\d{4}) ?- ?(\d{4})\)/) || t.match(/from (\d{4}) to (\d{4})/i);
+    if (m) f.period = [m[1], m[2]];
+    else if (f.start && f.end) f.period = [f.start.year, f.end.year];
+    return f;
+  }
+
+  function hasFigures(f) { return !!(f && (f.base || f.end || f.cagr)); }
+
+  function figuresLine(f) {
+    const parts = [];
+    if (!f) return '';
+    if (f.base) parts.push(f.base.year + ': ' + f.base.label);
+    if (f.start && (!f.base || f.start.year !== f.base.year)) parts.push(f.start.year + ': ' + f.start.label);
+    if (f.end) parts.push(f.end.year + ': ' + f.end.label);
+    if (f.cagr) parts.push('CAGR ' + f.cagr + '%');
+    if (f.period) parts.push('forecast period ' + f.period[0] + '-' + f.period[1]);
+    return parts.join(' · ');
+  }
+
+  function unitTitle(label) { return String(label || '').replace(/\b(trillion|billion|million)\b/i, (s) => s.charAt(0).toUpperCase() + s.slice(1).toLowerCase()); }
+
+  function metaFromFigures(kw, f) {
+    const lkw = KR.lowerKw(kw);
+    const endY = f.end ? f.end.year : (f.period ? f.period[1] : (String(D.period).split('-')[1] || '2033'));
+    const titles = [];
+    if (f.end) titles.push(kw + ' to Reach ' + unitTitle(f.end.label) + ' by ' + f.end.year);
+    if (f.period) titles.push(kw + ' Size, Share & Forecast, ' + f.period[0] + '-' + f.period[1]);
+    titles.push(kw + ' Size, Share & Forecast ' + endY);
+    titles.push(kw + ' Trends, Growth & Insights ' + endY);
+    titles.push(kw + ' Report ' + endY);
+    const title = titles.find((x) => x.length <= 60) || titles[titles.length - 1];
+
+    let core = '';
+    if (f.base && f.end) core = 'The ' + lkw + ' was valued at ' + f.base.label + ' in ' + f.base.year + ' and is projected to reach ' + f.end.label + ' by ' + f.end.year;
+    else if (f.start && f.end) core = 'The ' + lkw + ' is projected to grow from ' + f.start.label + ' in ' + f.start.year + ' to ' + f.end.label + ' by ' + f.end.year;
+    else if (f.end) core = 'The ' + lkw + ' is projected to reach ' + f.end.label + ' by ' + f.end.year;
+    else if (f.base) core = 'The ' + lkw + ' was valued at ' + f.base.label + ' in ' + f.base.year;
+    const withNumbers = [];
+    if (core) {
+      if (f.cagr && f.period) withNumbers.push(core + ', growing at a CAGR of ' + f.cagr + '% from ' + f.period[0] + ' to ' + f.period[1] + '.');
+      if (f.cagr) withNumbers.push(core + ', at a CAGR of ' + f.cagr + '%.');
+      withNumbers.push(core + '.');
+    } else if (f.cagr) {
+      withNumbers.push('The ' + lkw + ' is expected to grow at a CAGR of ' + f.cagr + '%' + (f.period ? ' from ' + f.period[0] + ' to ' + f.period[1] : '') + '.');
+    }
+    const generic = 'Explore the ' + lkw + ' size, share, growth drivers, segments, regional trends and key companies, with forecasts to ' + endY + '.';
+    let desc = withNumbers.find((x) => x.length <= 160) || (withNumbers.length ? withNumbers.slice().sort((a, b) => a.length - b.length)[0] : generic);
+    // Too short for Google: add what the report covers.
+    const tails = [' Get segment, regional and company insights.', ' Explore segments, regions and key players.', ' See the key trends.'];
+    for (const tail of tails) {
+      if (desc.length < 140 && (desc + tail).length <= 160) { desc += tail; break; }
+    }
+    return { title, desc };
+  }
+
+  function applyMeta() {
+    const f = D.figures || {};
+    const m = metaFromFigures(D.keyword, f);
+    $('#dmMetaTitle').value = m.title;
+    $('#dmMetaDesc').value = m.desc;
+    const box = $('#dmFigures');
+    const line = figuresLine(f);
+    box.textContent = line
+      ? 'Figures read from the pasted content: ' + line + '. The meta title and description use these exact numbers. Check them before copying.'
+      : 'No market size or CAGR was found in the Overview, so the description has no figures. Check that the Overview was pasted, or type the figures in.';
+    box.classList.remove('hidden');
   }
 
   function imageSize(url) {
@@ -488,18 +651,43 @@
       const raw = pasted.filter((b) => b.kind === 'table' || !isImageCaption(b.text, alts));
       const captions = pasted.length - raw.length;
       KR.busy(btn, true, 'Optimizing…');
-      let s = prog.step('Structuring the content and adding H-tags…');
-      const units = finalizeUnits(classify(raw, keyword), $('#dmStdImgs').checked);
+      D.keyword = keyword;
+
+      // Headings from the content itself; the standard section names only if the AI cannot answer.
+      let levels = null;
+      const better = new Map();
+      let s = prog.step('AI: choosing the H2 and H3 headings from the content…');
+      try {
+        const r = await KR.api('dm', 'headings', { keyword, blocks: raw.map(blockSummary) });
+        levels = new Map();
+        (r.items || []).forEach((x) => {
+          levels.set(x.i, x.level);
+          if (x.better) better.set(x.i, x.better);
+        });
+        if (!Array.from(levels.values()).some((v) => v === 'h2')) levels = null;
+        D.headingSource = levels ? 'chosen from the content by AI' : 'standard section names, because the AI found no main sections';
+        if (levels) s.done('Headings chosen from the content'); else s.fail('The AI found no main sections, so the standard section names were used.');
+      } catch (e) {
+        levels = null;
+        D.headingSource = 'standard section names, because the AI was not available';
+        s.fail('AI headings not available (' + e.message + '), so the standard section names were used.');
+      }
+
+      s = prog.step('Structuring the content…');
+      const units = finalizeUnits(classify(raw, keyword, levels, better), $('#dmStdImgs').checked);
       D.units = units;
       D.links = [];
-      D.keyword = keyword;
       const count = (type) => units.filter((u) => u.type === type).length;
       s.done('Structured: ' + count('h2') + ' H2, ' + count('h3') + ' H3, ' + count('ul') + ' lists, ' + count('table') + ' table(s)');
       if (captions) prog.info('Removed ' + captions + ' image caption line' + (captions === 1 ? '' : 's') + ' from the content. The alt text is kept only inside the image.');
       if (!count('table')) prog.info('No segmentation table was detected. Check that the "Market Segmentation" section was pasted.');
 
-      const yrs = overviewText().match(/\((\d{4})\s*[-\u2013\u2014]\s*(\d{4})\)/);
-      D.period = yrs ? yrs[1] + '-' + yrs[2] : '2026-2033';
+      // The figures for the CMS boxes come from the Overview and highlights (or, failing that, the whole text).
+      let figures = figuresFrom(figureText());
+      if (!hasFigures(figures)) figures = figuresFrom(raw.map((b) => String(b.text || '')).join(' ').slice(0, 20000));
+      D.figures = figures;
+      const yrs = figureText().match(/\((\d{4})\s*[-\u2013\u2014]\s*(\d{4})\)/);
+      D.period = figures.period ? figures.period.join('-') : (yrs ? yrs[1] + '-' + yrs[2] : '2026-2033');
 
       D.imgs = [];
       if (inputs.length) {
@@ -552,10 +740,11 @@
         }).filter(Boolean);
         s.done('Internal links: ' + applyLinks(D.units, D.links).applied.length + ' placed');
       }
-      setMetaDefaults();
+      applyMeta();
+      if (hasFigures(figures)) prog.info('Meta boxes filled from the content: ' + figuresLine(figures) + '.');
       renderDm();
       KR.showSub('dm', 'dm-preview');
-      KR.toast('Optimized. Move the images in Preview if needed, then open "CMS boxes" to copy the meta title, meta description and HTML.', 'ok');
+      KR.toast('Optimized. Check the headings and move the images if needed, then open "CMS boxes" to copy the meta title, meta description and HTML.', 'ok');
     } catch (e) {
       prog.error(e.message);
       KR.toast(e.message, 'err');
@@ -617,14 +806,18 @@
     });
   }
 
+  // More options from the AI. It is given the content's figures and the server drops any option with a number
+  // that is not in the content.
   async function aiMeta(btn) {
     try {
       if (!D.units.length) throw new Error('Run Optimize first.');
       KR.busy(btn, true, 'Thinking…');
-      const r = await KR.api('dm', 'meta', { keyword: D.keyword, overview: overviewText(), period: D.period });
+      const r = await KR.api('dm', 'meta', { keyword: D.keyword, overview: figureText().slice(0, 6000), period: D.period, figures: figuresLine(D.figures) });
       const chips = (list, field) => list.map((t) => '<button class="chip" type="button" data-fill="' + field + '" data-val="' + esc(t) + '">' + esc(t) + '<small>' + t.length + ' chars</small></button>').join('');
       $('#dmMetaSuggest').innerHTML = (r.titles.length ? '<h3>Title options (click to use)</h3><div class="chips">' + chips(r.titles, 'dmMetaTitle') + '</div>' : '') +
-        (r.descriptions.length ? '<h3>Description options (click to use)</h3><div class="chips">' + chips(r.descriptions, 'dmMetaDesc') + '</div>' : '');
+        (r.descriptions.length ? '<h3>Description options (click to use)</h3><div class="chips">' + chips(r.descriptions, 'dmMetaDesc') + '</div>' : '') +
+        (r.dropped ? '<p class="hint">' + r.dropped + ' AI option(s) were left out because they used a number that is not in the content.</p>' : '') +
+        (!r.titles.length && !r.descriptions.length ? '<p class="hint">No AI options passed the figures check. Keep the boxes above, which use the content\'s own figures.</p>' : '');
     } catch (e) {
       KR.toast(e.message, 'err');
     } finally {
@@ -634,13 +827,12 @@
 
   async function saveDm(btn) {
     try {
-      const user = KR.requireUser();
+      KR.requireUser();
       if (!D.units.length) throw new Error('Run Optimize first.');
       const applied = applyLinks(D.units, D.links).applied;
       const words = B.wordCount(D.units.map((u) => (u.items ? u.items.map((i) => i.text).join(' ') : (u.text || ''))).join(' '));
       KR.busy(btn, true, 'Saving…');
       await KR.api('dm', 'save', {
-        user,
         keyword: D.keyword,
         image: D.imgs.map((im) => im.src).join('\n'),
         alt: D.imgs.map((im) => im.alt).join('\n'),
@@ -681,6 +873,31 @@
       D.links[Number(i)].enabled = e.target.checked;
       renderDm();
     });
+    const heads = $('#dmHeadings');
+    if (heads) {
+      heads.addEventListener('change', (e) => {
+        const t = e.target;
+        if (t.dataset.hlvl !== undefined) setHeading(Number(t.dataset.hlvl), { level: t.value });
+        else if (t.dataset.htxt !== undefined) setHeading(Number(t.dataset.htxt), { text: t.value });
+      });
+      heads.addEventListener('click', (e) => {
+        const u = e.target.closest('[data-huse]');
+        if (u) {
+          const unit = D.units[Number(u.getAttribute('data-huse'))];
+          if (unit && unit.better) setHeading(Number(u.getAttribute('data-huse')), { text: unit.better });
+          return;
+        }
+        if (e.target.closest('[data-hall]')) {
+          D.units.forEach((unit) => {
+            if (unit.isHeading && unit.better) {
+              unit.text = unit.better;
+              if (unit.type === 'p') unit.html = esc(unit.text);
+            }
+          });
+          renderDm();
+        }
+      });
+    }
     $('#dmMetaTitle').addEventListener('input', updateCounters);
     $('#dmMetaDesc').addEventListener('input', updateCounters);
     $('#dmCopyTitle').addEventListener('click', (e) => KR.copy($('#dmMetaTitle').value.trim(), e.currentTarget));

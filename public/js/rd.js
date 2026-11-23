@@ -1,7 +1,9 @@
 'use strict';
-/* RD tab: the analyst pastes the RD and sees every use of the primary and secondary keywords highlighted in colour,
-   with a count per keyword. Data consistency, language, structure and fact checks run alongside, and the text of
-   every problem found is shaded faint red in the same view (click an issue to jump to it).
+/* RD tab: the analyst pastes the RD and sees every use of the primary, must-use and secondary keywords highlighted in
+   colour, with a count per keyword. A missing primary or must-use keyword is reported as an error. Data consistency,
+   language, structure and fact checks run alongside, and the text of every problem found is shaded faint red in the
+   same view (click an issue to jump to it). Every finished check is saved to the RD sheet automatically, so the whole
+   team can read it in "Check results". Only the check team can run checks.
    If nothing has changed since the last check, the saved results are shown instead of paying for the AI again. */
 (function () {
   const KR = window.KR;
@@ -14,6 +16,8 @@
     '#F2D0F5', '#CFE0E8', '#FFE3C2', '#D9F2C4', '#E8D9C9'];
   // Problem text: faint red with a red underline, so it cannot be mistaken for a keyword colour.
   const ISSUE_STYLE = 'background:#FFE3E3;box-shadow:inset 0 -2px 0 #E5484D;border-radius:2px';
+
+  function lines2list(v) { return String(v || '').split(/[\n,]+/).map((s) => s.trim()).filter(Boolean); }
 
   // ---------- Research List ----------
   async function loadResearchOptions() {
@@ -32,9 +36,12 @@
     const v = $('#rdReport').value;
     const r = v === '' ? null : (S.research || [])[Number(v)];
     if (!r) return;
+    const must = String(r.mustUse || '').split(/\s*,\s*/).map((s) => s.trim()).filter(Boolean);
+    const mustSet = new Set(must.map((m) => m.toLowerCase()));
     $('#rdName').value = r.reportName || '';
     $('#rdPrimary').value = r.primary || '';
-    $('#rdSecondary').value = String(r.secondary || '').split(/\s*,\s*/).filter(Boolean).join('\n');
+    $('#rdMust').value = must.join('\n');
+    $('#rdSecondary').value = String(r.secondary || '').split(/\s*,\s*/).filter(Boolean).filter((s) => !mustSet.has(s.trim().toLowerCase())).join('\n');
   }
 
   // ---------- keyword matching ----------
@@ -60,9 +67,11 @@
     return (String(text || '').match(re) || []).length;
   }
 
-  function buildKeywords(primary, secondaries) {
+  // must: the must-use keywords (required); secondaries: the other secondary keywords (nice to have).
+  function buildKeywords(primary, secondaries, must) {
     const list = [];
     const seen = new Set();
+    const mustSet = new Set((must || []).map((m) => String(m).toLowerCase().replace(/\s+/g, ' ').trim()));
     let sec = 0;
     const add = (kw, isPrimary) => {
       const k = String(kw || '').replace(/\s+/g, ' ').trim();
@@ -72,10 +81,11 @@
       if (!pat) return;
       seen.add(key);
       const color = isPrimary ? PRIMARY_COLOR : { bg: PALETTE[sec++ % PALETTE.length], fg: '#232323' };
-      list.push({ kw: k, primary: isPrimary, pat, bg: color.bg, fg: color.fg, count: 0 });
+      list.push({ kw: k, primary: isPrimary, must: !isPrimary && mustSet.has(key), pat, bg: color.bg, fg: color.fg, count: 0 });
     };
     add(primary, true);
-    secondaries.forEach((s) => add(s, false));
+    (must || []).forEach((s) => add(s, false));
+    (secondaries || []).forEach((s) => add(s, false));
     return list;
   }
 
@@ -124,7 +134,7 @@
         const mark = doc.createElement('mark');
         mark.textContent = m[0];
         mark.setAttribute('data-k', String(k));
-        mark.setAttribute('title', item.kw + (item.primary ? ' (primary)' : ' (secondary)'));
+        mark.setAttribute('title', item.kw + (item.primary ? ' (primary)' : item.must ? ' (must use)' : ' (secondary)'));
         mark.setAttribute('style', 'background:' + item.bg + ';color:' + item.fg + ';padding:0 2px;border-radius:3px');
         frag.appendChild(mark);
         last = m.index + m[0].length;
@@ -136,12 +146,44 @@
     return root.innerHTML;
   }
 
-  function analyseKeywords(primary, secondaries) {
-    const list = buildKeywords(primary, secondaries);
+  function analyseKeywords(primary, secondaries, must) {
+    const list = buildKeywords(primary, secondaries, must);
     const text = B.blocksToText(B.extractBlocks($('#rdContent')));
     const words = B.wordCount(text);
     list.forEach((k) => { k.count = countIn(text, k.pat); });
     return { list, words, html: '' };
+  }
+
+  // The RD section a keyword usually belongs in (used in the fix of a missing must-use keyword).
+  function sectionGuess(kw) {
+    const n = String(kw || '').toLowerCase();
+    if (/^(how|what|which|who|why|when|where|is|are|does|do|can|will)\b/.test(n)) return 'FAQs';
+    if (/\b(companies|company|players|vendors|manufacturers|suppliers|competitive)\b/.test(n)) return 'Competitive Landscape';
+    if (/\b(north america|europe|asia|pacific|latin america|middle east|africa|regional|region)\b/.test(n)) return 'Regional Analysis';
+    if (/\b(cagr|forecast|outlook|share|largest|projection)\b/.test(n)) return 'Key Market Highlights';
+    if (/\b(trends?|growth|drivers?|opportunit\w*|challenges?|restraints?|demand|dynamics)\b/.test(n)) return 'Market Dynamics';
+    if (/\b(size|value|valuation|revenue|worth|industry|report|analysis|overview|global)\b/.test(n)) return 'Overview';
+    return 'Segmental Analysis';
+  }
+
+  // A missing primary or must-use keyword is an error; other secondary keywords are only shown as not used.
+  function keywordIssues(r) {
+    const K = r && r.kw;
+    if (!K || !K.list.length) return [];
+    const tips = (r.review && r.review.keywordTips) || [];
+    const out = [];
+    K.list.forEach((k) => {
+      if (k.count || (!k.primary && !k.must)) return;
+      const tip = tips.find((t) => String(t.keyword || '').toLowerCase() === k.kw.toLowerCase());
+      out.push({
+        severity: 'error',
+        section: 'Keywords',
+        quote: '',
+        problem: k.primary ? 'The primary keyword "' + k.kw + '" is not used in the content.' : 'Must-use keyword "' + k.kw + '" is not used in the content.',
+        fix: tip && tip.suggestion ? tip.suggestion : (k.primary ? 'Use it in the Overview heading and the first paragraph.' : 'Use "' + k.kw + '" naturally in the ' + sectionGuess(k.kw) + '.')
+      });
+    });
+    return out;
   }
 
   // ---------- problem locations (faint red) ----------
@@ -233,27 +275,33 @@
       '<div id="rdHighlight" class="kr-preview" style="max-height:640px">' + r.kw.html + '</div>';
   }
 
+  function typeOf(k) { return k.primary ? 'Primary' : k.must ? 'Must use' : 'Secondary'; }
+
   function keywordHtml() {
     const K = S.rd && S.rd.kw;
     if (!K) return '';
-    if (!K.list.length) return '<p class="hint">Enter the primary and secondary keywords (or pick a report from the Research List) to see them highlighted.</p>' + contentHtml();
+    if (!K.list.length) return '<p class="hint">Enter the primary, must-use and secondary keywords (or pick a report from the Research List) to see them highlighted.</p>' + contentHtml();
     const tips = (S.rd.review && S.rd.review.keywordTips) || [];
     const p = K.list.find((k) => k.primary);
     const density = p && K.words ? Math.round((p.count * p.kw.split(/\s+/).length / K.words) * 10000) / 100 : 0;
     const used = K.list.filter((k) => k.count > 0).length;
+    const must = K.list.filter((k) => k.must);
+    const mustUsed = must.filter((k) => k.count > 0).length;
     let html = '<p class="small">' + K.words.toLocaleString('en-US') + ' words · ' + used + ' of ' + K.list.length + ' keywords used' +
+      (must.length ? ' · <b>must-use: ' + mustUsed + ' of ' + must.length + ' used</b>' : ' · <b>no must-use keywords entered</b>') +
       (p ? ' · primary used ' + p.count + ' time' + (p.count === 1 ? '' : 's') + ' (' + density + '% of the words)' : '') + '</p>';
     html += '<div style="display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 12px">' + K.list.map((k, i) =>
       '<button type="button" class="chip" data-kjump="' + i + '" title="Click to jump to the next use" style="display:inline-flex;align-items:center;gap:8px">' +
       swatch(k.bg, 14) + '<span>' + esc(k.kw) + '</span>' +
       '<span class="tag' + (k.count ? (k.primary ? ' kr' : '') : ' bad') + '">' + k.count + '×</span>' +
-      (k.primary ? '<span class="tag kr">primary</span>' : '') + '</button>').join('') + '</div>';
+      (k.primary ? '<span class="tag kr">primary</span>' : k.must ? '<span class="tag kr">must use</span>' : '') + '</button>').join('') + '</div>';
     html += '<div class="tbl-wrap"><table class="tbl"><thead><tr><th></th><th>Keyword</th><th>Type</th><th>Times used</th><th></th></tr></thead><tbody>' +
       K.list.map((k) => {
         const tip = !k.count ? tips.find((t) => t.keyword.toLowerCase() === k.kw.toLowerCase()) : null;
+        const missing = (k.primary || k.must) ? '<span class="tag bad">Missing: required</span>' : '<span class="tag bad">Not used</span>';
         return '<tr><td>' + swatch(k.bg, 18) + '</td>' +
-          '<td><b>' + esc(k.kw) + '</b></td><td>' + (k.primary ? 'Primary' : 'Secondary') + '</td><td>' + k.count + '</td>' +
-          '<td class="small">' + (k.count ? '' : '<span class="tag bad">Not used</span>' + (tip ? ' ' + esc(tip.suggestion) : '')) + '</td></tr>';
+          '<td><b>' + esc(k.kw) + '</b></td><td>' + typeOf(k) + '</td><td>' + k.count + '</td>' +
+          '<td class="small">' + (k.count ? '' : missing + (tip ? ' ' + esc(tip.suggestion) : '')) + '</td></tr>';
       }).join('') + '</tbody></table></div>';
     html += '<p class="hint">Counts include uses inside a longer keyword (for example the primary inside "… market size"); where keywords overlap, the highlight shows the longer one. Click a keyword above to jump through its uses.</p>';
     return html + contentHtml();
@@ -267,6 +315,8 @@
     r.issueItems = issueItems(r);
     if (r.kw) r.kw.html = highlight(markIssues(safeRoot(r.srcHtml || ''), r.issueItems), r.kw.list);
     let html = card('Keyword usage and problem locations', keywordHtml());
+    const kwIssues = keywordIssues(r);
+    html += card('Keyword requirements', KR.issuesHtml(kwIssues, 'The primary keyword and every must-use keyword are used.'));
     if (r.review) {
       html += card('Data consistency', KR.issuesHtml(rv.consistency, 'No data inconsistencies found.'));
       html += card('Language and style', KR.issuesHtml(rv.language, 'No language issues found.'));
@@ -325,8 +375,8 @@
   const SAVE_HOURS = 24;
 
   // A short fingerprint of everything that affects the results.
-  function sigOf(content, primary, secondaries, links, web) {
-    const s = [content, primary, secondaries.join('|'), links.map((l) => l.href).join('|'), web ? 'web' : 'noweb'].join('\u0001');
+  function sigOf(content, primary, secondaries, must, links, web) {
+    const s = [content, primary, secondaries.join('|'), must.join('|'), links.map((l) => l.href).join('|'), web ? 'web' : 'noweb'].join('\u0001');
     let h = 5381;
     for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
     return s.length + ':' + (h >>> 0).toString(36);
@@ -349,6 +399,10 @@
 
   // ---------- run ----------
   async function runRd(ev) {
+    if (KR.me && KR.me.checker === false) {
+      KR.toast('Checks are run by the check team only. Open "Check results" to read their findings.', 'err');
+      return;
+    }
     const btn = $('#rdRun');
     const prog = KR.progress('#rdProgress');
     const force = !!(ev && ev.shiftKey);
@@ -358,19 +412,22 @@
       if (content.length < 300) throw new Error('Paste the full RD content first.');
       const links = $$('#rdContent a[href]').map((a) => ({ text: B.textOf(a), href: a.getAttribute('href') || '' })).filter((l) => /^https?:\/\//i.test(l.href));
       const primary = $('#rdPrimary').value.trim();
-      const secondaries = $('#rdSecondary').value.split(/[\n,]+/).map((s) => s.trim()).filter(Boolean);
+      const must = lines2list($('#rdMust').value);
+      const secondaries = lines2list($('#rdSecondary').value);
       const reportName = $('#rdName').value.trim() || primary;
       const web = $('#rdWeb').checked;
+      if (!must.length) prog.info('No must-use keywords entered. Pick the report from the Research List to fill them in.');
       KR.busy(btn, true, 'Verifying…');
       $('#rdSave').disabled = true;
 
-      const res = S.rd = { reportName, primary, secondaries, content, links, words: B.wordCount(content), srcHtml: $('#rdContent').innerHTML, kw: null, review: null, facts: null, linkStatus: null };
-      res.kw = analyseKeywords(primary, secondaries);
-      prog.info('Keywords highlighted: ' + res.kw.list.filter((k) => k.count > 0).length + ' of ' + res.kw.list.length + ' used');
+      const res = S.rd = { reportName, primary, secondaries, must, content, links, words: B.wordCount(content), srcHtml: $('#rdContent').innerHTML, kw: null, review: null, facts: null, linkStatus: null };
+      res.kw = analyseKeywords(primary, secondaries, must);
+      const missingMust = res.kw.list.filter((k) => (k.must || k.primary) && !k.count).length;
+      prog.info('Keywords highlighted: ' + res.kw.list.filter((k) => k.count > 0).length + ' of ' + res.kw.list.length + ' used' + (missingMust ? ' · ' + missingMust + ' required keyword(s) missing' : ''));
       renderRd();
       $('#rdResults').scrollIntoView({ behavior: 'smooth', block: 'start' });
 
-      const sig = sigOf(content, primary, secondaries, links, web);
+      const sig = sigOf(content, primary, secondaries, must, links, web);
       const saved = force ? null : loadSaved(sig);
       if (saved) {
         res.review = saved.review;
@@ -382,11 +439,13 @@
         return;
       }
 
+      // The AI review sees every keyword (must-use first) so it can suggest where to add the missing ones.
+      const allSecondaries = must.concat(secondaries.filter((s) => must.map((m) => m.toLowerCase()).indexOf(s.toLowerCase()) < 0));
       await Promise.all([
         (async () => {
           const s = prog.step('Data consistency, grammar and structure…');
           try {
-            res.review = await KR.api('rd', 'review', { content, primary, secondaries, reportName });
+            res.review = await KR.api('rd', 'review', { content, primary, secondaries: allSecondaries, reportName });
             s.done('Review complete' + (res.review.aiError ? ' (AI part failed: ' + res.review.aiError + ')' : ''));
           } catch (e) { s.fail('Review failed: ' + e.message); }
         })(),
@@ -413,6 +472,12 @@
       renderRd();
       saveRun(sig, res);
       $('#rdSave').disabled = false;
+      // Saved straight away, so the whole team can read this check in "Check results".
+      if (res.review || (res.facts && !res.facts.error)) {
+        const sv = prog.step('Saving the check for the team…');
+        if (await saveRd(true)) sv.done('Saved to the RD sheet · visible to everyone in "Check results"');
+        else sv.fail('Not saved to the sheet. Click "Save to RD sheet again".');
+      }
     } catch (e) {
       prog.error(e.message);
       KR.toast(e.message, 'err');
@@ -425,7 +490,10 @@
     return (list || []).map((x, i) => (i + 1) + '. [' + x.severity + '] ' + (x.section ? x.section + ': ' : '') + x.problem + (x.fix ? ' -> ' + x.fix : '') + (x.quote ? ' | "' + x.quote + '"' : '')).join('\n') || 'OK';
   }
 
-  async function saveRd() {
+  function kwLabel(k) { return k.kw + (k.primary ? ' [primary]' : k.must ? ' [must use]' : ''); }
+
+  // auto = saved at the end of a check (no button state, a short message). Returns true when saved.
+  async function saveRd(auto) {
     const btn = $('#rdSave');
     try {
       const user = KR.requireUser();
@@ -434,27 +502,30 @@
       const rv = r.review || {};
       const f = r.facts || { issues: [], claims: [], suggestions: [] };
       const list = (r.kw && r.kw.list) || [];
-      const issueCount = (rv.consistency || []).length + (rv.language || []).length + (rv.structure || []).length + (f.issues || []).length + list.filter((k) => !k.count).length;
-      KR.busy(btn, true, 'Saving…');
+      const structure = keywordIssues(r).concat(rv.structure || []);
+      const issueCount = (rv.consistency || []).length + (rv.language || []).length + structure.length + (f.issues || []).length;
+      if (!auto) KR.busy(btn, true, 'Saving…');
       await KR.api('rd', 'save', {
         user,
         reportName: r.reportName,
         primary: r.primary,
         words: r.words,
-        found: list.filter((k) => k.count > 0).map((k) => k.kw + ' (' + k.count + ')' + (k.primary ? ' [primary]' : '')).join(', '),
-        missing: list.filter((k) => !k.count).map((k) => k.kw).join(', '),
+        found: list.filter((k) => k.count > 0).map((k) => kwLabel(k) + ' (' + k.count + ')').join(', '),
+        missing: list.filter((k) => !k.count).map(kwLabel).join(', '),
         consistency: lines(rv.consistency),
         language: lines(rv.language),
-        structure: lines(rv.structure),
+        structure: lines(structure),
         facts: (f.claims || []).map((c) => '[' + c.verdict + '] ' + c.claim + (c.correction ? ' -> ' + c.correction : '') + (c.sourceUrl ? ' (' + c.sourceUrl + ')' : '')).join('\n') || 'No claims',
         suggestions: (f.suggestions || []).map((s) => (s.anchor || '(anchor)') + ' -> ' + s.url).join('\n'),
         issueCount
       });
-      KR.toast('Saved to the RD sheet.', 'ok');
+      KR.toast(auto ? 'Check saved: the team can read it in "Check results".' : 'Saved to the RD sheet.', 'ok');
+      return true;
     } catch (e) {
-      KR.toast(e.message, 'err');
+      KR.toast((auto ? 'The check was not saved for the team: ' : '') + e.message, 'err');
+      return false;
     } finally {
-      KR.busy(btn, false);
+      if (!auto) KR.busy(btn, false);
     }
   }
 
@@ -475,7 +546,7 @@
     $('#rdClear').addEventListener('click', () => B.clearPaste($('#rdContent')));
     $('#rdReport').addEventListener('change', onReportPick);
     $('#rdRun').addEventListener('click', runRd);
-    $('#rdSave').addEventListener('click', saveRd);
+    $('#rdSave').addEventListener('click', () => saveRd(false));
     $('#rdResults').addEventListener('click', (e) => {
       const b = e.target.closest('[data-kjump]');
       if (b) { jumpTo(Number(b.getAttribute('data-kjump'))); return; }

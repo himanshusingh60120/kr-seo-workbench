@@ -2,8 +2,10 @@
 
 // Keywords: opportunity finder (competitor gap + reports sitemap -> New report / Revamp), the last saved scan,
 // in-house keywords added by the people allowed to (volume, scope and reason shown before they are added),
+// must-use secondary keywords for every report (the searches people make for a market report, found with Mangools),
 // more secondary keywords from the pages ranking in Google's top 10, analyst verification, manager approval,
 // the Research List, and the SEO check of saved keywords.
+// Names saved to the sheet (Created By, Scanned By, Analyst, Manager) always come from the sign-in.
 
 const { handler, HttpError, nowIST, competitors, hostOf, pool, titleCase } = require('../lib/http');
 const mg = require('../lib/mangools');
@@ -24,6 +26,27 @@ const STATUS = {
   REJECTED: 'Rejected'
 };
 
+// ---------- must-use secondary keywords ----------
+// Every report needs secondary keywords. These are the searches people make for a market report beyond its head
+// term. Each one with search volume becomes a "must use" keyword, which the RD, Publish and Live checks require,
+// so the page answers more of the queries people type.
+const VARIANTS = [
+  ['size', (t) => t + ' market size'],
+  ['share', (t) => t + ' market share'],
+  ['growth', (t) => t + ' market growth'],
+  ['trends', (t) => t + ' market trends'],
+  ['forecast', (t) => t + ' market forecast'],
+  ['analysis', (t) => t + ' market analysis'],
+  ['report', (t) => t + ' market report'],
+  ['industry', (t) => t + ' industry'],
+  ['companies', (t) => t + ' companies'],
+  ['global', (t) => 'global ' + t + ' market']
+];
+// The standard report searches: used to reach the minimum when Mangools has too few volumes.
+const CORE = ['size', 'share', 'growth', 'trends', 'forecast'];
+const MIN_MUST = 5;
+const MIN_VOLUME = 10;
+
 function emailList(text) { return String(text || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean); }
 
 // The people who may approve or reject keywords (with the manager PIN). MANAGER_EMAILS replaces the list;
@@ -42,6 +65,12 @@ function requireEditor(req) {
   if (!isEditor(req)) throw new HttpError(403, 'Only ' + inhouseEditors().join(' and ') + ' can add in-house keywords.');
 }
 
+function signedIn(req) {
+  const u = String((req && req.user) || '').trim();
+  if (!u) throw new HttpError(419, 'Please sign in to continue.');
+  return u;
+}
+
 function num(v) {
   if (v === null || v === undefined || v === '') return '';
   const n = Number(v);
@@ -52,6 +81,8 @@ function numOrNull(v) {
   const n = num(v);
   return n === '' ? null : n;
 }
+
+function isYes(v) { return String(v || '').trim().toLowerCase() === 'yes'; }
 
 function reportIdOf(url) {
   const m = String(url || '').replace(/[?#].*$/, '').replace(/\/+$/, '').match(/-(\d+)$/);
@@ -72,6 +103,82 @@ function reportKeyword(raw) {
   return k;
 }
 
+// "smart helmet market" -> "smart helmet"
+function topicOfPrimary(primary) { return cleanKw(primary).replace(/\s+(market|markets|industry|industries)$/, '').trim(); }
+
+function variantsFor(primary) {
+  const t = topicOfPrimary(primary);
+  if (!t) return [];
+  const p = cleanKw(primary);
+  return VARIANTS.map((v) => ({ id: v[0], kw: cleanKw(v[1](t)) })).filter((v) => v.kw && v.kw !== p);
+}
+
+// The must-use secondaries of one report. vols: Map keyword -> Mangools row; existing: [{ kw, sv }] it already has.
+// Returns [{ kw, sv, kd, cpc, trend, mustUse, why }]: variants people search for, the best-searched existing
+// secondaries (up to 3), and the standard report searches when fewer than MIN_MUST were found.
+function pickMustUse(primary, vols, existing) {
+  const have = new Map();
+  (existing || []).forEach((k) => {
+    const kw = cleanKw(k && k.kw);
+    if (kw) have.set(T.dupKey(kw), { kw, sv: numOrNull(k.sv) });
+  });
+  const seen = new Set([T.dupKey(primary)]);
+  const out = [];
+  variantsFor(primary).forEach((v) => {
+    const dk = T.dupKey(v.kw);
+    if (seen.has(dk)) return;
+    seen.add(dk);
+    const m = vols.get(v.kw) || {};
+    const own = have.get(dk);
+    const sv = numOrNull(m.sv) !== null ? numOrNull(m.sv) : (own ? own.sv : null);
+    out.push({ id: v.id, kw: own ? own.kw : v.kw, sv, kd: numOrNull(m.kd), cpc: numOrNull(m.cpc), trend: m.trend || '', mustUse: false, why: '' });
+  });
+  out.forEach((k) => {
+    if (k.sv !== null && k.sv >= MIN_VOLUME) {
+      k.mustUse = true;
+      k.why = 'People search this exact phrase about ' + k.sv.toLocaleString('en-US') + ' times a month; using it lets the page answer that search.';
+    } else if (k.sv) {
+      k.why = 'Searched about ' + k.sv + ' times a month.';
+    }
+  });
+  const extra = Array.from(have.values())
+    .filter((k) => !seen.has(T.dupKey(k.kw)) && (k.sv || 0) >= 20 && T.regionType(k.kw) !== 'country')
+    .sort((a, b) => (b.sv || 0) - (a.sv || 0)).slice(0, 3)
+    .map((k) => ({ id: 'existing', kw: k.kw, sv: k.sv, kd: null, cpc: null, trend: '', mustUse: true, why: 'One of the most searched variants competitors rank for (about ' + k.sv.toLocaleString('en-US') + ' a month).' }));
+  let count = out.filter((k) => k.mustUse).length + extra.length;
+  CORE.forEach((id) => {
+    if (count >= MIN_MUST) return;
+    const k = out.find((x) => x.id === id && !x.mustUse);
+    if (!k) return;
+    k.mustUse = true;
+    k.why = 'A standard search for a market report' + (k.sv === null ? ' (Mangools has no volume for it yet)' : '') + '; every report page should answer it.';
+    count++;
+  });
+  return extra.concat(out.filter((k) => k.mustUse || (k.sv || 0) > 0))
+    .map((k) => ({ kw: k.kw, sv: k.sv, kd: k.kd, cpc: k.cpc, trend: k.trend, mustUse: k.mustUse, why: k.why }));
+}
+
+// A group saved without any must-use secondary (an older page, a failed volume lookup) gets them here: its
+// best-searched secondaries first, then the standard report searches, so every report always has some.
+function withMustUse(rows) {
+  const primaryRow = rows.find((r) => r.type === 'Primary');
+  if (!primaryRow || rows.some((r) => r !== primaryRow && r.mustUse)) return rows;
+  const secs = rows.filter((r) => r !== primaryRow);
+  const ranked = secs.filter((r) => (numOrNull(r.sv) || 0) >= MIN_VOLUME && T.regionType(r.keyword) !== 'country')
+    .sort((a, b) => (numOrNull(b.sv) || 0) - (numOrNull(a.sv) || 0)).slice(0, MIN_MUST);
+  ranked.forEach((r) => { r.mustUse = true; });
+  const out = rows.slice();
+  const have = new Set(rows.map((r) => T.dupKey(r.keyword)));
+  let count = ranked.length;
+  variantsFor(primaryRow.keyword).forEach((v) => {
+    if (count >= MIN_MUST || CORE.indexOf(v.id) < 0 || have.has(T.dupKey(v.kw))) return;
+    out.push({ keyword: v.kw, type: 'Secondary', sv: null, kd: null, cpc: null, ppc: null, competitors: '', source: 'Must-use (standard search)', reason: 'A standard search for a market report; every report page should answer it.', placement: '', mustUse: true });
+    have.add(T.dupKey(v.kw));
+    count++;
+  });
+  return out;
+}
+
 function publicRow(r) {
   const seo = String(r['SEO Check'] || '');
   const placement = String(r['Suggested Placement'] || '');
@@ -81,7 +188,7 @@ function publicRow(r) {
     placement: placement + (seo && !/^OK/.test(seo) ? (placement ? ' · ' : '') + 'SEO: ' + seo : ''),
     seoCheck: seo, status: r['Status'], analyst: r['Analyst'], verdict: r['Analyst Verdict'],
     analystReason: r['Analyst Reason'], verifiedAt: r['Verified At'], manager: r['Manager'], note: r['Manager Note'],
-    decisionAt: r['Decision At'], action: r['Action'] || 'New report', existingUrl: r['Existing URL']
+    decisionAt: r['Decision At'], action: r['Action'] || 'New report', existingUrl: r['Existing URL'], mustUse: isYes(r['Must Use'])
   };
 }
 
@@ -99,7 +206,8 @@ function researchRow(r) {
     secondary: r['Secondary Keywords'], sv: r['Primary Search Volume'], kd: r['Primary KD'], analyst: r['Analyst'],
     approvedBy: r['Approved By'], approvalDate: r['Approval Date'], liveStatus: r['Live Status'], liveUrl: r['Live URL'],
     reportId: r['Report ID'], liveDate: r['Live Date'], detectedOn: r['Detected On'], lastCheck: r['Last Live Check'],
-    checkSummary: r['Live Check Summary'], action: r['Action'] || 'New report', existingUrl: r['Existing URL']
+    checkSummary: r['Live Check Summary'], action: r['Action'] || 'New report', existingUrl: r['Existing URL'],
+    mustUse: r['Must-use Keywords'] || ''
   };
 }
 
@@ -112,8 +220,10 @@ function prepGroup(g) {
   return rows;
 }
 
-// Builds sheet rows; every secondary gets a suggested RD section and an SEO check.
-async function groupObjects(g, rows, user, now, groupId) {
+// Builds sheet rows; every secondary gets a suggested RD section and an SEO check, and the group always has
+// must-use secondaries.
+async function groupObjects(g, input, user, now, groupId) {
+  const rows = withMustUse(input);
   const action = g.action === 'Revamp' ? 'Revamp' : 'New report';
   const primaryRow = rows.find((r) => r.type === 'Primary');
   const secs = rows.filter((r) => r !== primaryRow);
@@ -148,7 +258,8 @@ async function groupObjects(g, rows, user, now, groupId) {
       'Status': STATUS.PENDING,
       'Action': action,
       'Existing URL': String(g.existingUrl || ''),
-      'SEO Check': isPrimary ? 'OK' : (a ? SEO.seoCheckText(a) : '')
+      'SEO Check': isPrimary ? 'OK' : (a ? SEO.seoCheckText(a) : ''),
+      'Must Use': !isPrimary && r.mustUse ? 'Yes' : ''
     };
   });
 }
@@ -399,11 +510,12 @@ module.exports = handler({
     };
   },
 
-  async saveScan(b) {
+  async saveScan(b, req) {
     const now = nowIST();
+    const user = signedIn(req);
     const rows = (Array.isArray(b.topics) ? b.topics : []).slice(0, 300).map((t) => ({
       'Scanned At': now,
-      'Scanned By': String(b.user || ''),
+      'Scanned By': user,
       'Location': String(b.location || ''),
       'Report Title': String(t.title || ''),
       'Action': String(t.action || ''),
@@ -426,6 +538,28 @@ module.exports = handler({
     return { saved: rows.length };
   },
 
+  // ---------- must-use secondary keywords ----------
+  // items: [{ key, primary, existing: [{ kw, sv }] }] -> { items: [{ key, keywords: [{ kw, sv, kd, cpc, trend, mustUse, why }] }] }
+  // One Mangools lookup for up to 60 reports (10 search variants each).
+  async mustHave(b) {
+    const items = (Array.isArray(b.items) ? b.items : []).filter((x) => x && cleanKw(x.primary)).slice(0, 60);
+    if (!items.length) return { items: [] };
+    const all = [];
+    items.forEach((x) => variantsFor(x.primary).forEach((v) => all.push(v.kw)));
+    const vols = new Map();
+    let note = '';
+    try {
+      (await mg.keywordImports(all, b.location_id)).forEach((k) => { if (k && k.kw) vols.set(cleanKw(k.kw), k); });
+    } catch (e) {
+      if (e.status === 429) throw e; // the browser waits and asks again
+      note = 'Search volumes could not be loaded (' + e.message + '), so the standard report searches were used.';
+    }
+    return {
+      items: items.map((x) => ({ key: String(x.key || x.primary), keywords: pickMustUse(cleanKw(x.primary), vols, Array.isArray(x.existing) ? x.existing : []) })),
+      note
+    };
+  },
+
   // ---------- in-house keywords ----------
   // Whether the signed-in person may add in-house keywords (the panel is only shown to them).
   async inhouseInfo(b, req) {
@@ -433,7 +567,8 @@ module.exports = handler({
   },
 
   // Preview only, nothing is saved: for each pasted keyword, the search volume, the scope (new report, revamp
-  // of a published report, or a similar report exists; already in the pipeline or not) and why to take it up.
+  // of a published report, or a similar report exists; already in the pipeline or not), why to take it up, and
+  // its must-use secondary keywords (from the same Mangools lookup).
   async inhouse(b, req) {
     requireEditor(req);
     const seen = new Set();
@@ -448,7 +583,9 @@ module.exports = handler({
     const vols = new Map();
     let volumeNote = '';
     try {
-      (await mg.keywordImports(list, b.location_id)).forEach((k) => { if (k && k.kw) vols.set(cleanKw(k.kw), k); });
+      const lookups = list.slice();
+      list.forEach((kw) => variantsFor(kw).forEach((v) => lookups.push(v.kw)));
+      (await mg.keywordImports(lookups, b.location_id)).forEach((k) => { if (k && k.kw) vols.set(cleanKw(k.kw), k); });
     } catch (e) {
       volumeNote = e.message;
     }
@@ -469,6 +606,7 @@ module.exports = handler({
         url: kr.url || '',
         name: kr.name || '',
         inPipeline: both[1].get(key) || '',
+        mustHave: pickMustUse(kw, vols, []),
         why: ''
       };
     });
@@ -482,11 +620,12 @@ module.exports = handler({
     return { rows, volumeNote, whyNote, skipped: kws.length - list.length };
   },
 
-  // Adds the confirmed in-house keywords to the pipeline: one keyword group per report, waiting for analyst
-  // verification like every other topic. The reason shown in the preview (edited or not) is saved with it.
+  // Adds the confirmed in-house keywords to the pipeline: one keyword group per report, with its must-use
+  // secondaries, waiting for analyst verification like every other topic. The reason shown in the preview
+  // (edited or not) is saved with it.
   async inhouseAdd(b, req) {
     requireEditor(req);
-    const user = String(req.user);
+    const user = signedIn(req);
     const items = (Array.isArray(b.items) ? b.items : []).filter((x) => x && reportKeyword(x.keyword)).slice(0, 25);
     if (!items.length) throw new HttpError(400, 'Tick at least one keyword to add.');
     const pipe = await pipelineIndex();
@@ -511,6 +650,16 @@ module.exports = handler({
         keyword: kw, type: 'Primary', sv: x.sv, kd: x.kd, cpc: x.cpc, ppc: null, competitors: '',
         source: 'In-house', reason: String(x.why || '').trim(), placement: 'Title, H1, meta and Overview'
       }];
+      const have = new Set([T.dupKey(kw)]);
+      (Array.isArray(x.mustHave) ? x.mustHave : []).slice(0, 15).forEach((k) => {
+        const s = cleanKw(k && k.kw);
+        if (!s || have.has(T.dupKey(s))) return;
+        have.add(T.dupKey(s));
+        rows.push({
+          keyword: s, type: 'Secondary', sv: k.sv, kd: k.kd, cpc: k.cpc, ppc: null, competitors: '',
+          source: k.mustUse ? 'In-house (must-use search)' : 'In-house (search variant)', reason: String(k.why || ''), placement: '', mustUse: !!k.mustUse
+        });
+      });
       objs = objs.concat(await groupObjects(g, rows, user, now, 'G-' + (base + i).toString(36).toUpperCase()));
       added.push(kw);
     }
@@ -561,10 +710,10 @@ module.exports = handler({
     return { keywords: await mg.keywordImports(keywords, b.location_id) };
   },
 
-  // Adds secondary keywords to a keyword group that is still waiting for analyst verification.
-  async addRows(b) {
-    const user = String(b.user || '').trim();
-    if (!user) throw new HttpError(400, 'Enter your name (top right) first.');
+  // Adds secondary keywords to a keyword group that is still waiting for analyst verification
+  // (from "Suggest more secondary keywords" or from Keyword ideas).
+  async addRows(b, req) {
+    const user = signedIn(req);
     const gid = String(b.groupId || '').trim();
     const all = await sheets.readTab('KEYWORDS');
     const rows = all.filter((r) => r['Group ID'] === gid);
@@ -597,22 +746,22 @@ module.exports = handler({
       'CPC': num(r.cpc),
       'PPC': '',
       'Competitor Pages': String(r.sources || ''),
-      'Source': 'Top-10 pages',
+      'Source': String(r.source || 'Top-10 pages').slice(0, 60),
       'AI Reason': String(r.why || ''),
       'Suggested Placement': SEO.sectionOf(r.keyword),
       'Status': STATUS.PENDING,
       'Action': primaryRow['Action'] || 'New report',
       'Existing URL': primaryRow['Existing URL'] || '',
-      'SEO Check': assessed[i] ? SEO.seoCheckText(assessed[i]) : ''
+      'SEO Check': assessed[i] ? SEO.seoCheckText(assessed[i]) : '',
+      'Must Use': r.mustUse ? 'Yes' : ''
     }));
     await sheets.appendRows('KEYWORDS', objs);
     return { added: objs.length };
   },
 
   // ---------- saving for analyst verification ----------
-  async saveGroups(b) {
-    const user = String(b.user || '').trim();
-    if (!user) throw new HttpError(400, 'Enter your name (top right) first.');
+  async saveGroups(b, req) {
+    const user = signedIn(req);
     const groups = (Array.isArray(b.groups) ? b.groups : []).slice(0, 30);
     if (!groups.length) throw new HttpError(400, 'No topics selected.');
     const now = nowIST();
@@ -685,9 +834,9 @@ module.exports = handler({
     return { groups: order.reverse().map((g) => Object.assign({}, groups[g], { status: groupStatus(groups[g].rows) })) };
   },
 
-  async verify(b) {
-    const analyst = String(b.analyst || '').trim();
-    if (!analyst) throw new HttpError(400, 'Enter your name (top right) before verifying.');
+  // The analyst is the signed-in person. Each verdict may also change whether a secondary is "must use".
+  async verify(b, req) {
+    const analyst = signedIn(req);
     const rows = await sheets.readTab('KEYWORDS');
     const byId = new Map(rows.map((r) => [r['ID'], r]));
     const now = nowIST();
@@ -698,15 +847,17 @@ module.exports = handler({
       if (['Good', 'Not good'].indexOf(v.verdict) < 0) throw new HttpError(400, 'Choose Good or Not good for "' + r['Keyword'] + '".');
       const reason = String(v.reason || '').trim();
       if (!reason) throw new HttpError(400, 'Add a reason for "' + r['Keyword'] + '".');
-      updates.push({ row: r._row, data: { 'Analyst': analyst, 'Analyst Verdict': v.verdict, 'Analyst Reason': reason, 'Verified At': now, 'Status': STATUS.VERIFIED } });
+      const data = { 'Analyst': analyst, 'Analyst Verdict': v.verdict, 'Analyst Reason': reason, 'Verified At': now, 'Status': STATUS.VERIFIED };
+      if (r['Type'] !== 'Primary' && typeof v.mustUse === 'boolean') data['Must Use'] = v.mustUse ? 'Yes' : '';
+      updates.push({ row: r._row, data });
     });
     if (!updates.length) throw new HttpError(400, 'Nothing to verify for this group.');
     await sheets.updateCells('KEYWORDS', updates);
     return { updated: updates.length };
   },
 
-  // Approval or rejection. The approver is the person who is signed in (not the email typed on the screen):
-  // they must be one of the managers and must give the manager PIN.
+  // Approval or rejection. The approver is the person who is signed in (not an email typed on the screen):
+  // they must be one of the managers and must give the manager PIN. Every approved report gets must-use keywords.
   async decide(b, req) {
     const mgr = String((req && req.user) || '').trim().toLowerCase();
     const allowed = managers();
@@ -729,14 +880,25 @@ module.exports = handler({
     const approved = rows.filter((r) => ids.has(r['ID']));
     if (!approved.length) throw new HttpError(400, 'Select at least one keyword to approve.');
     const primary = approved.find((r) => r['Type'] === 'Primary') || approved[0];
-    const secondaries = approved.filter((r) => r !== primary).map((r) => r['Keyword']);
+    const secs = approved.filter((r) => r !== primary);
+    const secondaries = secs.map((r) => r['Keyword']);
     const action = primary['Action'] === 'Revamp' ? 'Revamp' : 'New report';
     const existingUrl = primary['Existing URL'] || '';
 
-    await sheets.updateCells('KEYWORDS', rows.map((r) => ({
-      row: r._row,
-      data: { 'Status': ids.has(r['ID']) ? STATUS.APPROVED : STATUS.EXCLUDED, 'Manager': mgr, 'Manager Note': note, 'Decision At': now }
-    })));
+    // Must-use keywords: the approved secondaries marked "Must use"; if none is marked, the best-searched approved
+    // secondaries; if no secondary was approved at all, the standard report searches.
+    let mustRows = secs.filter((r) => isYes(r['Must Use']));
+    if (!mustRows.length) mustRows = secs.slice().sort((a, c) => (Number(c['Search Volume']) || 0) - (Number(a['Search Volume']) || 0)).slice(0, MIN_MUST);
+    const mustIds = new Set(mustRows.map((r) => r['ID']));
+    const mustList = mustRows.length
+      ? mustRows.map((r) => r['Keyword'])
+      : variantsFor(primary['Keyword']).filter((v) => CORE.indexOf(v.id) >= 0).map((v) => v.kw);
+
+    await sheets.updateCells('KEYWORDS', rows.map((r) => {
+      const data = { 'Status': ids.has(r['ID']) ? STATUS.APPROVED : STATUS.EXCLUDED, 'Manager': mgr, 'Manager Note': note, 'Decision At': now };
+      if (mustIds.has(r['ID'])) data['Must Use'] = 'Yes';
+      return { row: r._row, data };
+    }));
 
     const research = await sheets.readTab('RESEARCH');
     const existing = research.find((r) => r['Group ID'] === b.groupId);
@@ -751,7 +913,8 @@ module.exports = handler({
       'Approved By': mgr,
       'Approval Date': now,
       'Action': action,
-      'Existing URL': existingUrl
+      'Existing URL': existingUrl,
+      'Must-use Keywords': mustList.join(', ')
     };
     if (existing) {
       await sheets.updateCells('RESEARCH', [{ row: existing._row, data: rec }]);
@@ -765,7 +928,7 @@ module.exports = handler({
       }
       await sheets.appendRows('RESEARCH', [rec]);
     }
-    return { approved: approved.length, primary: primary['Keyword'], approvalDate: now, action };
+    return { approved: approved.length, primary: primary['Keyword'], approvalDate: now, action, mustUse: mustList };
   },
 
   async research() {

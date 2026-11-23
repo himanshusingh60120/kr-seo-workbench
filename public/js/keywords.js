@@ -1,7 +1,8 @@
 'use strict';
 /* Keywords tab: opportunity finder (competitor gap + reports sitemap -> New report / Revamp; the last saved scan
    is reloaded from the Opportunities sheet; sortable by volume; more secondary keywords from the pages ranking in
-   Google's top 10), analyst verification (with the same suggestions), manager approval, Research List. */
+   Google's top 10), must-use secondary keywords for every topic sent on, analyst verification (with the same
+   suggestions and a "Must use" tick per keyword), manager approval, Research List. */
 (function () {
   const KR = window.KR;
   const { $, $$, esc, fmtNum } = KR;
@@ -21,6 +22,9 @@
   }
   function nv(v) { return v === null || v === undefined || v === '' || isNaN(Number(v)) ? -1 : Number(v); }
   function bySv(a, b) { return nv(b.sv) - nv(a.sv); }
+  // Must-use keywords first, then by volume.
+  function mustFirst(a, b) { return ((b.mustUse ? 1 : 0) - (a.mustUse ? 1 : 0)) || bySv(a, b); }
+  const MUST_TAG = ' <span class="tag kr">must use</span>';
   function locId(label) {
     const opt = $$('#opLocation option').find((o) => o.textContent === label);
     return opt ? Number(opt.value) : 0;
@@ -30,21 +34,35 @@
       f: { q: '', st: '', pr: '', sort: '', hidePipe: false, hideIrr: true } }, extra || {});
   }
 
+  // Keyword difficulty in words, on the Mangools scale (0 to 100).
+  KR.kdLabel = (kd) => {
+    if (kd === null || kd === undefined || kd === '' || !Number.isFinite(Number(kd))) return '';
+    const n = Number(kd);
+    return n < 15 ? 'Very easy' : n < 30 ? 'Easy' : n < 50 ? 'Possible' : n < 70 ? 'Difficult' : n < 85 ? 'Hard' : 'Very hard';
+  };
+  KR.kdHtml = (kd) => {
+    const l = KR.kdLabel(kd);
+    return l ? fmtNum(kd) + '<div class="muted small">' + l + '</div>' : '–';
+  };
+
   // ---------- Mangools pacing (3 calls / 30 s) ----------
+  // One pace for every Mangools call in the tab (Keyword ideas uses it too, through KR.mgPaced).
   let lastMg = 0;
-  async function mgCall(action, payload, prog) {
+  async function pacedCall(endpoint, action, payload, prog) {
     const gap = 11000 - (Date.now() - lastMg);
     if (lastMg && gap > 0) await KR.countdown(Math.ceil(gap / 1000), prog, 'Pacing Mangools calls (3 per 30 s)');
     for (let attempt = 0; ; attempt++) {
       lastMg = Date.now();
       try {
-        return await KR.api('keywords', action, payload);
+        return await KR.api(endpoint, action, payload);
       } catch (e) {
         if (e.status === 429 && attempt < 3) { await KR.countdown(Math.min(Number(e.retryAfter) || 30, 90), prog, 'Mangools rate limit'); continue; }
         throw e;
       }
     }
   }
+  function mgCall(action, payload, prog) { return pacedCall('keywords', action, payload, prog); }
+  KR.mgPaced = pacedCall;
 
   // ---------- more secondary keywords from the Google top 10 ----------
   // o = { primary, title, loc, existingUrl, existing: [keywords already in the list] }
@@ -199,29 +217,62 @@
     const O = S.opp;
     const pick = O.topics.filter((t) => t.priority === 'High' && t.keep !== false && !t.inPipeline && !O.sent.has(t.key)).slice(0, n);
     if (!pick.length) { prog.info('Auto-send: no new High-priority topics to send.'); return; }
-    if (!KR.userName()) {
-      pick.forEach((t) => O.sel.add(t.key));
-      renderOppTable();
-      prog.info('Auto-send skipped because your name is empty. The ' + pick.length + ' High-priority topics are ticked: add your name (top right) and click "Send selected".');
-      return;
-    }
     const s = prog.step('Sending the top ' + pick.length + ' High-priority topics to analyst verification…');
     try {
-      const r = await sendTopics(pick);
+      const r = await sendTopics(pick, prog);
       s.done('Sent ' + r.saved + ' topics (' + r.rows + ' keywords) to analyst verification');
     } catch (e) {
       s.fail('Auto-send failed: ' + e.message);
     }
   }
 
-  async function sendTopics(input) {
+  // Must-use secondary keywords: one Mangools lookup gives the volumes of the standard report searches for up to
+  // 60 topics. Searches with volume (and the best-searched competitor variants) become "must use". If the lookup
+  // fails, the server adds the standard report searches when the topic is saved.
+  async function addMustHave(list, prog) {
+    const todo = list.filter((t) => !t.mustDone);
+    if (!todo.length) return;
+    const st = prog.step('Mangools: must-use secondary keywords for ' + todo.length + ' topic' + (todo.length === 1 ? '' : 's') + '…');
+    let made = 0;
+    try {
+      for (const batch of KR.chunk(todo, 60)) {
+        const r = await mgCall('mustHave', {
+          location_id: S.opp.loc || 0,
+          items: batch.map((t) => ({ key: t.key, primary: t.primary.kw, existing: t.secondary.map((k) => ({ kw: k.kw, sv: k.sv })) }))
+        }, prog);
+        (r.items || []).forEach((it) => {
+          const t = batch.find((x) => x.key === it.key);
+          if (!t) return;
+          (it.keywords || []).forEach((k) => {
+            const cur = t.secondary.find((x) => x.kw === k.kw);
+            if (cur) {
+              if (k.mustUse) { cur.mustUse = true; cur.why = cur.why || k.why; }
+              if (cur.sv === null || cur.sv === undefined) cur.sv = k.sv;
+              return;
+            }
+            t.secondary.push({ kw: k.kw, sv: k.sv, kd: k.kd, cpc: k.cpc, src: k.mustUse ? 'Must-use search' : 'Report search variant', why: k.why || '', mustUse: !!k.mustUse });
+          });
+          t.mustDone = true;
+          t.keywordCount = t.secondary.length + 1;
+          made += t.secondary.filter((k) => k.mustUse).length;
+        });
+        if (r.note) prog.info(r.note);
+      }
+      st.done('Must-use secondary keywords chosen: ' + made + ' across ' + todo.length + ' topic' + (todo.length === 1 ? '' : 's'));
+    } catch (e) {
+      st.fail('Must-use keywords could not be looked up (' + e.message + '). The standard report searches will be added when the topics are saved.');
+    }
+  }
+
+  async function sendTopics(input, prog) {
     const user = KR.requireUser();
     const O = S.opp;
     const list = (input || []).filter((t) => !t.inPipeline && !O.sent.has(t.key));
     if (!list.length) throw new Error('These topics are already in the pipeline.');
+    await addMustHave(list, prog || KR.progress('#opProgress'));
     const groups = list.map((t) => {
       const comps = Object.keys(t.positions || {}).join(', ');
-      const secs = t.secondary.slice().sort(bySv).slice(0, 20);
+      const secs = t.secondary.slice().sort(mustFirst).slice(0, 25);
       return {
         reportName: t.title,
         seed: t.primary.kw,
@@ -235,7 +286,8 @@
           competitors: k.sources && k.sources.length ? k.sources.join(', ') : comps,
           source: i === 0 ? 'Competitor gap' : (k.src || 'Competitor gap'),
           reason: i === 0 ? (t.reason || ('Competitors rank for it (' + compsText(t) + ') and we do not.')) : (k.why || ('Variant searched for the same report; ranked by ' + comps + ' and not by us.')),
-          placement: i === 0 ? 'Title, H1, meta and Overview' : ''
+          placement: i === 0 ? 'Title, H1, meta and Overview' : '',
+          mustUse: i === 0 ? false : !!k.mustUse
         }))
       };
     });
@@ -254,7 +306,7 @@
       inPipeline: O.sent.has(t.key) ? 'Sent for verification' : (t.inPipeline || '')
     }));
     if (!topics.length) return;
-    KR.api('keywords', 'saveScan', { user: KR.userName(), location: O.locLabel, topics })
+    KR.api('keywords', 'saveScan', { location: O.locLabel, topics })
       .then((r) => KR.toast('Saved ' + r.saved + ' opportunities to the "Opportunities" sheet.', 'ok'))
       .catch((e) => KR.toast('Opportunities were not saved to the sheet: ' + e.message, 'err'));
   }
@@ -331,17 +383,18 @@
       '<label class="chk"><input type="checkbox" id="opHideIrr"' + (O.f.hideIrr ? ' checked' : '') + '> Hide not relevant</label>' +
       '<span class="grow"></span><button id="opSelHigh" class="btn tiny" type="button">Select all High</button><button id="opSelNone" class="btn tiny ghost" type="button">Clear selection</button>' +
       '<span class="hint" id="opSelCount"></span><button id="opSend" class="btn primary" type="button">Send selected to analyst verification</button></div>' +
+      '<p class="hint">Sending a topic also picks its must-use secondary keywords (one Mangools lookup for all the topics sent together).</p>' +
       '<div id="opTable"></div>';
     renderOppTable();
   }
 
   function keywordsDetail(t) {
-    const rows = [Object.assign({ isPrimary: true }, t.primary)].concat(t.secondary.slice().sort(bySv));
+    const rows = [Object.assign({ isPrimary: true }, t.primary)].concat(t.secondary.slice().sort(mustFirst));
     return '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Keyword</th><th>Type</th><th>Volume</th><th>KD</th><th>Source</th></tr></thead><tbody>' +
-      rows.map((k) => '<tr><td>' + esc(k.kw) +
+      rows.map((k) => '<tr><td>' + esc(k.kw) + (k.mustUse ? MUST_TAG : '') +
         (k.seo && !/^OK/.test(k.seo) ? '<div class="muted small">SEO: ' + esc(k.seo) + '</div>' : '') +
         (k.why ? '<div class="muted small">' + esc(k.why) + '</div>' : '') + '</td>' +
-        '<td>' + (k.isPrimary ? 'Primary' : 'Secondary') + '</td><td>' + fmtNum(k.sv) + '</td><td>' + fmtNum(k.kd) + '</td>' +
+        '<td>' + (k.isPrimary ? 'Primary' : (k.mustUse ? 'Must use' : 'Secondary')) + '</td><td>' + fmtNum(k.sv) + '</td><td>' + KR.kdHtml(k.kd) + '</td>' +
         '<td class="small">' + (k.isPrimary ? '' : esc(k.src || 'Competitor gap') + (k.sources && k.sources.length ? '<div class="muted">' + esc(k.sources.join(', ')) + '</div>' : '')) + '</td></tr>').join('') +
       '</tbody></table></div>';
   }
@@ -361,15 +414,16 @@
       actionCell = '<span class="tag kr">New report</span><div class="muted small">not on our site</div>';
     }
     const comps = Object.keys(t.positions || {}).map((d) => esc(d.replace(/\.com$/, '')) + (t.positions[d] ? ' <b>#' + t.positions[d] + '</b>' : '')).join('<br>');
+    const mustCount = t.secondary.filter((k) => k.mustUse).length;
     let html = '<tr' + (t.keep === false ? ' class="warn-row"' : '') + '>' +
       '<td><input type="checkbox" data-osel="' + esc(t.key) + '"' + (O.sel.has(t.key) ? ' checked' : '') + (locked ? ' disabled title="Already in the pipeline"' : '') + '></td>' +
-      '<td><b>' + esc(t.title) + '</b><div class="muted small">' + esc(t.primary.kw) + ' · ' + t.keywordCount + ' keyword' + (t.keywordCount === 1 ? '' : 's') + '</div>' +
+      '<td><b>' + esc(t.title) + '</b><div class="muted small">' + esc(t.primary.kw) + ' · ' + t.keywordCount + ' keyword' + (t.keywordCount === 1 ? '' : 's') + (mustCount ? ' · ' + mustCount + ' must use' : '') + '</div>' +
       (t.inPipeline && !sent ? '<span class="tag">' + esc(t.inPipeline) + '</span>' : '') + (sent ? '<span class="tag ok">sent for verification</span>' : '') +
       (t.keep === false ? '<span class="tag bad">not relevant</span>' : '') + '</td>' +
       '<td>' + actionCell + '</td>' +
       '<td><span class="tag' + (t.priority === 'High' ? ' ok' : '') + '">' + esc(t.priority) + '</span>' + (t.ai ? '' : '<div class="muted small">by volume</div>') + '</td>' +
       '<td>' + fmtNum(t.primary.sv) + '<div class="muted small">all variants ' + fmtNum(t.totalVolume) + '</div></td>' +
-      '<td>' + fmtNum(t.kd) + '</td>' +
+      '<td>' + KR.kdHtml(t.kd) + '</td>' +
       '<td class="small">' + comps + '</td>' +
       '<td class="small">' + esc(t.reason || '') + '</td>' +
       '<td class="nowrap"><button class="btn tiny" type="button" data-okw="' + esc(t.key) + '">' + (O.open.has(t.key) ? 'Hide' : 'Keywords') + '</button> ' +
@@ -389,7 +443,7 @@
         ? '<div class="tbl-wrap"><table class="tbl"><thead><tr><th></th><th>Report</th><th>Action</th>' +
           '<th data-osort="" style="cursor:pointer" title="Sort by priority">Priority' + arrow('') + '</th>' +
           '<th data-osort="sv" style="cursor:pointer" title="Sort by volume">Volume' + arrow('sv') + '</th>' +
-          '<th data-osort="kd" style="cursor:pointer" title="Sort by KD, easiest first">KD' + arrow('kd') + '</th>' +
+          '<th data-osort="kd" style="cursor:pointer" title="Sort by KD, easiest first">Difficulty' + arrow('kd') + '</th>' +
           '<th data-osort="comps" style="cursor:pointer" title="Sort by competitors ranking">Competitors ranking' + arrow('comps') + '</th>' +
           '<th>Why take it up</th><th></th></tr></thead><tbody>' +
           shown.map(oppRow).join('') + '</tbody></table></div>'
@@ -450,8 +504,8 @@
       if (!list.length) { KR.toast('Tick the topics to send first.'); return; }
       KR.busy(b, true, 'Sending…');
       try {
-        const r = await sendTopics(list);
-        KR.toast('Sent ' + r.saved + ' topic(s) to analyst verification.', 'ok');
+        const r = await sendTopics(list, KR.progress('#opProgress'));
+        KR.toast('Sent ' + r.saved + ' topic(s) to analyst verification, with their must-use keywords.', 'ok');
       } catch (err) {
         KR.toast(err.message, 'err');
       } finally {
@@ -499,12 +553,16 @@
     const box = $('#kvTable');
     if (!g) { box.innerHTML = '<p class="hint">Nothing to verify right now.</p>'; return; }
     if (S.kvSugg && S.kvSugg.groupId !== g.groupId) S.kvSugg = null;
-    const rows = g.rows.filter((r) => r.type === 'Primary').concat(g.rows.filter((r) => r.type !== 'Primary').sort(bySv));
-    box.innerHTML = '<p class="small">' + actionHtml(g.action, g.existingUrl) + ' <span class="muted">· Seed: ' + esc(g.seed) + ' · Location: ' + esc(g.location) + ' · Proposed by ' + esc(g.createdBy) + ' · secondary keywords sorted by volume</span></p>' +
-      '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Keyword</th><th>Type</th><th>Volume</th><th>KD</th><th>Verdict</th><th>Reason (why it is, or is not, good for our page)</th></tr></thead><tbody>' +
-      rows.map((r) => '<tr data-id="' + esc(r.id) + '"><td><b>' + esc(r.keyword) + '</b><div class="muted small">' + esc(r.placement || r.source) + '</div></td><td>' + esc(r.type) + '</td><td>' + fmtNum(r.sv) + '</td><td>' + fmtNum(r.kd) + '</td>' +
-        '<td class="nowrap"><label class="chk"><input type="radio" name="v-' + esc(r.id) + '" value="Good"' + (r.verdict === 'Good' ? ' checked' : '') + '> Good</label><br><label class="chk"><input type="radio" name="v-' + esc(r.id) + '" value="Not good"' + (r.verdict === 'Not good' ? ' checked' : '') + '> Not good</label></td>' +
-        '<td><textarea rows="2" class="v-reason">' + esc(r.analystReason || r.reason) + '</textarea></td></tr>').join('') +
+    const rows = g.rows.filter((r) => r.type === 'Primary').concat(g.rows.filter((r) => r.type !== 'Primary').sort(mustFirst));
+    box.innerHTML = '<p class="small">' + actionHtml(g.action, g.existingUrl) + ' <span class="muted">· Seed: ' + esc(g.seed) + ' · Location: ' + esc(g.location) + ' · Proposed by ' + esc(g.createdBy) + ' · must-use keywords first, then by volume</span></p>' +
+      '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Keyword</th><th>Type</th><th>Volume</th><th>Difficulty</th><th>Must use</th><th>Verdict</th><th>Reason (why it is, or is not, good for our page)</th></tr></thead><tbody>' +
+      rows.map((r) => {
+        const primary = r.type === 'Primary';
+        return '<tr data-id="' + esc(r.id) + '"' + (primary ? ' data-primary="1"' : '') + '><td><b>' + esc(r.keyword) + '</b><div class="muted small">' + esc(r.placement || r.source) + '</div></td><td>' + esc(r.type) + '</td><td>' + fmtNum(r.sv) + '</td><td>' + KR.kdHtml(r.kd) + '</td>' +
+          '<td>' + (primary ? '<span class="muted small">primary</span>' : '<label class="chk"><input type="checkbox" class="v-must"' + (r.mustUse ? ' checked' : '') + '> must use</label>') + '</td>' +
+          '<td class="nowrap"><label class="chk"><input type="radio" name="v-' + esc(r.id) + '" value="Good"' + (r.verdict === 'Good' ? ' checked' : '') + '> Good</label><br><label class="chk"><input type="radio" name="v-' + esc(r.id) + '" value="Not good"' + (r.verdict === 'Not good' ? ' checked' : '') + '> Not good</label></td>' +
+          '<td><textarea rows="2" class="v-reason">' + esc(r.analystReason || r.reason) + '</textarea></td></tr>';
+      }).join('') +
       '</tbody></table></div>' +
       '<div class="row"><button class="btn" id="kvAllGood" type="button">Mark all Good</button><button class="btn ghost" id="kvMore" type="button">Suggest more secondary keywords (from top-10 pages)</button><span class="grow"></span><button class="btn primary" id="kvSubmit" type="button">Submit verification</button></div>' +
       '<div id="kvProgress" class="progress"></div><div id="kvMoreBox"></div>';
@@ -535,10 +593,10 @@
     if (!box) return;
     if (!sg) { box.innerHTML = ''; return; }
     if (!sg.list.length) { box.innerHTML = '<p class="hint">No new secondary keywords were found on the top-10 pages.</p>'; return; }
-    box.innerHTML = '<h3>Suggested from the top-10 pages (sorted by volume)</h3><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Add</th><th>Keyword</th><th>Volume</th><th>KD</th><th>Why</th><th>Seen on</th></tr></thead><tbody>' +
+    box.innerHTML = '<h3>Suggested from the top-10 pages (sorted by volume)</h3><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Add</th><th>Keyword</th><th>Volume</th><th>Difficulty</th><th>Why</th><th>Seen on</th></tr></thead><tbody>' +
       sg.list.map((k, i) => '<tr><td><input type="checkbox" data-kvs="' + i + '"' + (/^OK/.test(k.seo || 'OK') ? ' checked' : '') + '></td>' +
         '<td><b>' + esc(k.keyword) + '</b>' + (k.seo && !/^OK/.test(k.seo) ? '<div class="muted small">SEO: ' + esc(k.seo) + '</div>' : '') + '</td>' +
-        '<td>' + fmtNum(k.sv) + '</td><td>' + fmtNum(k.kd) + '</td><td class="small">' + esc(k.why) + '</td><td class="small">' + esc((k.sources || []).join(', ')) + '</td></tr>').join('') +
+        '<td>' + fmtNum(k.sv) + '</td><td>' + KR.kdHtml(k.kd) + '</td><td class="small">' + esc(k.why) + '</td><td class="small">' + esc((k.sources || []).join(', ')) + '</td></tr>').join('') +
       '</tbody></table></div><div class="row"><span class="grow"></span><button class="btn primary" id="kvAddMore" type="button">Add selected to this group</button></div>';
   }
 
@@ -546,12 +604,11 @@
     const sg = S.kvSugg;
     if (!sg) return;
     try {
-      const user = KR.requireUser();
       const rows = $$('#kvMoreBox input[data-kvs]').filter((c) => c.checked).map((c) => sg.list[Number(c.dataset.kvs)]).filter(Boolean)
-        .map((k) => ({ keyword: k.keyword, sv: k.sv, kd: k.kd, cpc: k.cpc, why: k.why, sources: (k.sources || []).join(', ') }));
+        .map((k) => ({ keyword: k.keyword, sv: k.sv, kd: k.kd, cpc: k.cpc, why: k.why, sources: (k.sources || []).join(', '), source: 'Top-10 pages' }));
       if (!rows.length) throw new Error('Tick the keywords to add.');
       KR.busy(btn, true, 'Adding…');
-      const r = await KR.api('keywords', 'addRows', { user, groupId: sg.groupId, rows });
+      const r = await KR.api('keywords', 'addRows', { groupId: sg.groupId, rows });
       KR.toast('Added ' + r.added + ' keywords to the group.', 'ok');
       S.kvSugg = null;
       await loadVerify();
@@ -563,16 +620,18 @@
 
   async function submitVerify(btn) {
     try {
-      const user = KR.requireUser();
       const gid = $('#kvGroup').value;
       if (!gid) return;
       const verdicts = $$('#kvTable tr[data-id]').map((tr) => {
         const c = tr.querySelector('input[type=radio]:checked');
-        return { id: tr.dataset.id, verdict: c ? c.value : '', reason: tr.querySelector('.v-reason').value.trim() };
+        const must = tr.querySelector('.v-must');
+        return { id: tr.dataset.id, primary: tr.dataset.primary === '1', verdict: c ? c.value : '', reason: tr.querySelector('.v-reason').value.trim(), mustUse: must ? must.checked : undefined };
       });
       if (verdicts.some((v) => !v.verdict || !v.reason)) throw new Error('Choose Good or Not good and give a reason for every keyword.');
+      const goodSecs = verdicts.filter((v) => !v.primary && v.verdict === 'Good');
+      if (goodSecs.length && !goodSecs.some((v) => v.mustUse)) throw new Error('Tick "Must use" on at least one Good secondary keyword: every report needs must-use keywords.');
       KR.busy(btn, true, 'Submitting…');
-      await KR.api('keywords', 'verify', { groupId: gid, analyst: user, verdicts });
+      await KR.api('keywords', 'verify', { groupId: gid, verdicts: verdicts.map((v) => ({ id: v.id, verdict: v.verdict, reason: v.reason, mustUse: v.mustUse })) });
       KR.toast('Verification submitted and sent to the manager for approval.', 'ok');
       S.kvSugg = null;
       await loadVerify();
@@ -585,17 +644,18 @@
   async function loadApprove() {
     const box = $('#kaList');
     box.innerHTML = '<p class="hint">Loading…</p>';
-    if (!$('#kaEmail').value) $('#kaEmail').value = KR.store.get('kr_mgr_email', '');
     if (!$('#kaPin').value) $('#kaPin').value = KR.session.get('kr_mgr_pin', '');
     try {
       const groups = (await loadGroups()).filter((g) => g.status === 'Awaiting Approval');
       if (!groups.length) { box.innerHTML = '<p class="hint">No keyword groups are waiting for approval.</p>'; return; }
       box.innerHTML = groups.map((g) => {
-        const rows = g.rows.filter((r) => r.type === 'Primary').concat(g.rows.filter((r) => r.type !== 'Primary').sort(bySv));
+        const rows = g.rows.filter((r) => r.type === 'Primary').concat(g.rows.filter((r) => r.type !== 'Primary').sort(mustFirst));
         return '<div class="group" data-gid="' + esc(g.groupId) + '"><div class="group-head"><b>' + esc(g.reportName) + '</b> ' + actionHtml(g.action, g.existingUrl) +
           ' <span class="muted small">' + esc(g.groupId) + ' · seed "' + esc(g.seed) + '" · verified by ' + esc((g.rows[0] && g.rows[0].analyst) || '') + '</span></div>' +
-          '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Approve</th><th>Keyword</th><th>Type</th><th>Volume</th><th>KD</th><th>Analyst verdict</th><th>Analyst reason</th></tr></thead><tbody>' +
-          rows.map((r) => '<tr><td><input type="checkbox" data-aid="' + esc(r.id) + '"' + (r.verdict === 'Good' ? ' checked' : '') + '></td><td><b>' + esc(r.keyword) + '</b>' + (r.seoCheck && !/^OK/.test(r.seoCheck) ? '<div class="muted small">SEO: ' + esc(r.seoCheck) + '</div>' : '') + '</td><td>' + esc(r.type) + '</td><td>' + fmtNum(r.sv) + '</td><td>' + fmtNum(r.kd) + '</td><td><span class="tag ' + (r.verdict === 'Good' ? 'ok' : 'bad') + '">' + esc(r.verdict) + '</span></td><td class="small">' + esc(r.analystReason) + '</td></tr>').join('') +
+          '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Approve</th><th>Keyword</th><th>Type</th><th>Volume</th><th>Difficulty</th><th>Analyst verdict</th><th>Analyst reason</th></tr></thead><tbody>' +
+          rows.map((r) => '<tr><td><input type="checkbox" data-aid="' + esc(r.id) + '"' + (r.verdict === 'Good' ? ' checked' : '') + '></td><td><b>' + esc(r.keyword) + '</b>' + (r.mustUse ? MUST_TAG : '') +
+            (r.seoCheck && !/^OK/.test(r.seoCheck) ? '<div class="muted small">SEO: ' + esc(r.seoCheck) + '</div>' : '') + '</td><td>' + esc(r.type) + '</td><td>' + fmtNum(r.sv) + '</td><td>' + KR.kdHtml(r.kd) + '</td>' +
+            '<td><span class="tag ' + (r.verdict === 'Good' ? 'ok' : 'bad') + '">' + esc(r.verdict) + '</span></td><td class="small">' + esc(r.analystReason) + '</td></tr>').join('') +
           '</tbody></table></div><div class="row"><input type="text" class="ka-note grow" placeholder="Note (optional)"><button class="btn danger" type="button" data-decide="reject">Reject</button><button class="btn primary" type="button" data-decide="approve">Approve to Research List</button></div></div>';
       }).join('');
     } catch (e) {
@@ -603,18 +663,19 @@
     }
   }
 
+  // The approver is the signed-in person (the server checks it); only the manager PIN is asked for here.
   async function decide(btn) {
     const g = btn.closest('.group');
     try {
-      const email = $('#kaEmail').value.trim();
       const pin = $('#kaPin').value;
-      if (!email || !pin) throw new Error('Enter the manager email and PIN.');
-      KR.store.set('kr_mgr_email', email);
+      if (!pin) throw new Error('Enter the manager PIN.');
       KR.session.set('kr_mgr_pin', pin);
       const approvedIds = $$('input[data-aid]', g).filter((c) => c.checked).map((c) => c.dataset.aid);
       KR.busy(btn, true, 'Saving…');
-      const r = await KR.api('keywords', 'decide', { groupId: g.dataset.gid, email, pin, decision: btn.dataset.decide, note: $('.ka-note', g).value, approvedIds });
-      KR.toast(btn.dataset.decide === 'approve' ? 'Approved (' + r.action + '): "' + r.primary + '" added to the Research List on ' + r.approvalDate + '.' : 'Keyword group rejected.', 'ok');
+      const r = await KR.api('keywords', 'decide', { groupId: g.dataset.gid, pin, decision: btn.dataset.decide, note: $('.ka-note', g).value, approvedIds });
+      KR.toast(btn.dataset.decide === 'approve'
+        ? 'Approved (' + r.action + '): "' + r.primary + '" added to the Research List on ' + r.approvalDate + (r.mustUse && r.mustUse.length ? ', with ' + r.mustUse.length + ' must-use keywords.' : '.')
+        : 'Keyword group rejected.', 'ok');
       await loadApprove();
     } catch (e) {
       KR.toast(e.message, 'err');
@@ -630,7 +691,7 @@
 
   KR.researchTable = (rows, withActions) => {
     if (!rows.length) return '<p class="hint">No approved keywords yet.</p>';
-    return '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Report</th><th>Action</th><th>Primary keyword</th><th>Secondary keywords</th><th>Approved</th><th>Live</th><th>Live date</th><th>Last live check</th>' + (withActions ? '<th></th>' : '') + '</tr></thead><tbody>' +
+    return '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Report</th><th>Action</th><th>Primary keyword</th><th>Must-use and secondary keywords</th><th>Approved</th><th>Live</th><th>Live date</th><th>Last live check</th>' + (withActions ? '<th></th>' : '') + '</tr></thead><tbody>' +
       rows.map((r, i) => {
         const liveLink = r.liveUrl ? '<div class="small">' + link(r.liveUrl) + '</div>' : '';
         let live;
@@ -640,7 +701,7 @@
         return '<tr><td><b>' + esc(r.reportName) + '</b><div class="muted small">' + esc(r.groupId) + '</div></td>' +
           '<td>' + actionHtml(r.action, r.action === 'Revamp' ? '' : r.existingUrl) + '</td>' +
           '<td>' + esc(r.primary) + '<div class="muted small">Vol ' + fmtNum(r.sv) + ' · KD ' + fmtNum(r.kd) + '</div></td>' +
-          '<td class="small">' + esc(r.secondary) + '</td>' +
+          '<td class="small">' + (r.mustUse ? '<div><b>Must use:</b> ' + esc(r.mustUse) + '</div>' : '<div class="muted">No must-use keywords recorded (approved before they were added)</div>') + (r.secondary ? '<div class="muted">' + esc(r.secondary) + '</div>' : '') + '</td>' +
           '<td class="small">' + esc(r.approvalDate) + '<div class="muted">' + esc(r.approvedBy) + '</div></td>' +
           '<td>' + live + '</td>' +
           '<td class="small">' + esc(r.liveDate) + (r.detectedOn ? '<div class="muted">detected ' + esc(r.detectedOn) + '</div>' : '') + '</td>' +

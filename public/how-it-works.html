@@ -1,0 +1,668 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How the SEO Workbench works | Kings Research</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ink: #232323;
+    --slate: #36476F;
+    --sky: #2DA0E0;
+    --royal: #2B71E2;
+    --indigo: #2D47E0;
+    --violet: #643EC1;
+    --green: #009307;
+    --mist: #EAF8FF;
+    --line: #C3D4DE;
+    --fog: #EDEDED;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body { margin: 0; font-family: Roboto, Arial, sans-serif; color: var(--ink); background: #fff; font-size: 16px; line-height: 1.55; }
+  a { color: var(--royal); }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 0 24px; }
+
+  .top { border-bottom: 1px solid var(--line); }
+  .top .wrap { display: flex; align-items: center; justify-content: space-between; min-height: 60px; gap: 16px; }
+  .brand { font-weight: 500; color: var(--slate); text-decoration: none; }
+  .pill { display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--royal); color: var(--royal); background: #fff; border-radius: 999px; padding: 8px 18px; font: inherit; font-size: 14px; font-weight: 500; cursor: pointer; text-decoration: none; white-space: nowrap; }
+  .pill.solid { background: linear-gradient(90deg, var(--sky), var(--royal) 55%, var(--indigo)); color: #fff; border-color: transparent; }
+  .pill:hover { background: var(--mist); }
+  .pill.solid:hover { filter: brightness(1.05); background: linear-gradient(90deg, var(--sky), var(--royal) 55%, var(--indigo)); }
+  .pill:focus-visible, a:focus-visible { outline: 2px solid var(--indigo); outline-offset: 2px; }
+
+  .hero { padding: 52px 0 12px; }
+  h1 { font-weight: 300; font-size: 46px; line-height: 1.08; letter-spacing: -0.015em; color: var(--slate); margin: 0 0 16px; max-width: 16ch; }
+  .lead { font-size: 18px; color: var(--slate); max-width: 64ch; margin: 0 0 22px; }
+  .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 8px; }
+  .hint { font-size: 14px; color: var(--slate); }
+
+  .flow-scroll { overflow-x: auto; margin: 0 -24px; padding: 8px 24px 0; }
+  #flow { display: block; width: 100%; min-width: 920px; height: auto; }
+  #flow text { font-family: Roboto, Arial, sans-serif; }
+  .sline { fill: none; stroke: var(--line); stroke-width: 1; opacity: 0.55; transition: opacity 0.3s, stroke-width 0.3s; }
+  .sline.on { stroke-width: 2; opacity: 1; }
+  .wline { fill: none; stroke: var(--line); stroke-width: 1; stroke-dasharray: 3 5; }
+  .wline.on { stroke: var(--green); stroke-width: 2; stroke-dasharray: none; }
+  .pipe { fill: none; stroke: url(#pipeGrad); stroke-width: 2; }
+  .chev { fill: none; stroke: var(--royal); stroke-width: 1.5; }
+  .stage { cursor: pointer; outline: none; }
+  .stage .box { fill: #fff; stroke: var(--line); stroke-width: 1; transition: fill 0.3s, stroke 0.3s; }
+  .stage:hover .box { stroke: var(--royal); }
+  .stage.on .box { fill: var(--mist); stroke: var(--royal); stroke-width: 2; }
+  .stage:focus-visible .box { stroke: var(--indigo); stroke-width: 3; }
+  .stage .name { font-size: 16px; font-weight: 500; fill: var(--ink); }
+  .stage .sub { font-size: 12px; fill: var(--slate); }
+  .stage .ico { fill: none; stroke: var(--slate); stroke-width: 1; stroke-linecap: round; stroke-linejoin: round; }
+  .stage.on .ico { stroke: var(--royal); }
+  .svc .pillbox { fill: #fff; stroke: var(--line); stroke-width: 1; transition: stroke 0.3s; }
+  .svc.on .pillbox { stroke-width: 2; }
+  .svc text { font-size: 14px; font-weight: 500; fill: var(--slate); }
+  .svc.dim text { fill: #8A97AE; }
+  .sheet .frame { fill: #fff; stroke: var(--line); }
+  .sheet .title { font-size: 15px; font-weight: 500; fill: var(--ink); }
+  .sheet .note { font-size: 12px; fill: var(--slate); }
+  .tabchip rect { fill: var(--fog); transition: fill 0.3s, stroke 0.3s; }
+  .tabchip text { font-size: 12px; fill: var(--slate); }
+  .tabchip.on rect { fill: #E5F5E6; stroke: var(--green); }
+  .tabchip.on text { fill: var(--green); font-weight: 500; }
+
+  .detail { border: 1px solid var(--line); margin: 18px 0 0; }
+  .detail-head { background: var(--mist); padding: 22px 24px; border-bottom: 1px solid var(--line); }
+  .detail-head h2 { font-weight: 400; font-size: 28px; line-height: 1.2; color: var(--slate); margin: 0 0 6px; }
+  .detail-head p { margin: 0 0 12px; max-width: 70ch; }
+  .uses { display: flex; flex-wrap: wrap; gap: 8px; font-size: 13px; color: var(--slate); }
+  .chip { border: 1px solid var(--line); border-left-width: 4px; background: #fff; padding: 3px 10px; }
+  .detail-grid { display: grid; grid-template-columns: 1fr 2fr 1fr 1fr; }
+  .cell { padding: 18px 22px 20px; border-right: 1px solid var(--line); }
+  .cell:last-child { border-right: 0; }
+  .cell h3 { font-size: 14px; font-weight: 500; color: var(--slate); margin: 0 0 8px; }
+  .cell ul { margin: 0; padding-left: 18px; font-size: 15px; }
+  .cell li + li { margin-top: 6px; }
+  .detail.swap .detail-head, .detail.swap .detail-grid { animation: swap 0.35s ease; }
+  @keyframes swap { from { opacity: 0.25; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+  section.block { padding: 64px 0 8px; }
+  section.block > .wrap > h2 { font-weight: 300; font-size: 32px; line-height: 1.15; color: var(--slate); margin: 0 0 10px; }
+  section.block > .wrap > p.lead { font-size: 17px; }
+
+  .steps { list-style: none; margin: 26px 0 0; padding: 0; display: grid; grid-template-columns: repeat(6, 1fr); border: 1px solid var(--line); }
+  .steps li { padding: 18px 16px 20px; border-right: 1px solid var(--line); cursor: pointer; transition: background 0.3s; outline: none; }
+  .steps li:last-child { border-right: 0; }
+  .steps li.on { background: var(--mist); }
+  .steps li:focus-visible { box-shadow: inset 0 0 0 2px var(--indigo); }
+  .num { display: inline-flex; width: 30px; height: 30px; border: 1px solid var(--line); border-radius: 50%; align-items: center; justify-content: center; font-size: 14px; font-weight: 500; color: var(--slate); background: #fff; transition: background 0.3s, color 0.3s, border-color 0.3s; }
+  .steps li.on .num, .steps li.done .num { background: var(--royal); border-color: var(--royal); color: #fff; }
+  .steps h3 { font-size: 16px; font-weight: 500; line-height: 1.3; margin: 12px 0 6px; }
+  .steps p { font-size: 14px; color: var(--slate); margin: 0 0 10px; }
+  .steps .branch { border-left: 2px solid var(--violet); padding-left: 8px; font-size: 13px; color: var(--ink); }
+  .tag { display: inline-block; font-size: 12px; padding: 2px 10px; border-radius: 999px; border: 1px solid; margin-bottom: 10px; }
+  .tag.free { color: var(--green); border-color: var(--green); }
+  .tag.cheap { color: var(--indigo); border-color: var(--indigo); }
+  .tag.paid { color: var(--violet); border-color: var(--violet); }
+  .track { height: 3px; background: var(--fog); }
+  .fill { height: 100%; width: 0; background: linear-gradient(90deg, var(--sky), var(--royal), var(--indigo)); transition: width 0.6s ease; }
+  .steps-controls { margin-top: 14px; }
+
+  .two { display: grid; grid-template-columns: 1fr 1fr; border: 1px solid var(--line); margin-top: 26px; }
+  .two > div { padding: 22px 24px; }
+  .two > div:first-child { border-right: 1px solid var(--line); }
+  .two h3 { font-size: 18px; font-weight: 500; margin: 0 0 4px; }
+  .two .sub { font-size: 14px; color: var(--slate); margin: 0 0 12px; }
+  .two ul { margin: 0 0 16px; padding-left: 18px; }
+  .two li + li { margin-top: 5px; }
+  .guard { border-top: 1px solid var(--line); padding-top: 14px; }
+  .note { border-left: 3px solid var(--royal); background: var(--mist); padding: 12px 16px; margin-top: 18px; max-width: 80ch; }
+
+  table.grid { width: 100%; border-collapse: collapse; margin-top: 24px; font-size: 15px; }
+  table.grid th, table.grid td { border: 1px solid var(--line); padding: 10px 14px; text-align: left; vertical-align: top; }
+  table.grid th { background: var(--mist); font-weight: 500; color: var(--slate); }
+  table.grid td:first-child { font-weight: 500; white-space: nowrap; }
+  table.grid tr.total td { background: #F6FBF6; font-weight: 500; }
+  .private { color: var(--violet); }
+
+  .roles { display: grid; grid-template-columns: repeat(4, 1fr); border: 1px solid var(--line); margin-top: 24px; }
+  .roles > div { padding: 20px 22px; border-right: 1px solid var(--line); }
+  .roles > div:last-child { border-right: 0; }
+  .roles h3 { font-size: 16px; font-weight: 500; margin: 0 0 6px; }
+  .roles p { margin: 0; font-size: 14px; color: var(--slate); }
+
+  footer { margin-top: 72px; border-top: 1px solid var(--line); padding: 24px 0 40px; font-size: 14px; color: var(--slate); }
+  footer .wrap { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 12px; }
+
+  @media (max-width: 960px) {
+    .detail-grid { grid-template-columns: 1fr 1fr; }
+    .cell { border-bottom: 1px solid var(--line); }
+    .cell:nth-child(2n) { border-right: 0; }
+    .steps { grid-template-columns: 1fr 1fr; }
+    .steps li { border-bottom: 1px solid var(--line); }
+    .steps li:nth-child(2n) { border-right: 0; }
+    .roles { grid-template-columns: 1fr 1fr; }
+    .roles > div { border-bottom: 1px solid var(--line); }
+    .roles > div:nth-child(2n) { border-right: 0; }
+  }
+  @media (max-width: 620px) {
+    h1 { font-size: 36px; }
+    .detail-grid, .steps, .two, .roles { grid-template-columns: 1fr; }
+    .cell, .steps li, .roles > div { border-right: 0; }
+    .two > div:first-child { border-right: 0; border-bottom: 1px solid var(--line); }
+    table.grid td:first-child { white-space: normal; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .detail.swap .detail-head, .detail.swap .detail-grid { animation: none; }
+    .fill, .num, .steps li, .stage .box, .tabchip rect { transition: none; }
+  }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="/">Kings Research SEO Workbench</a>
+    <a class="pill solid" href="/">Open the tool</a>
+  </div>
+</header>
+
+<main>
+  <div class="wrap hero">
+    <h1>How the SEO Workbench works</h1>
+    <p class="lead">A report idea moves through six steps until its page is live. Each step reads from a few outside services and logs what it found to one Google Sheet. Pick a step to see what goes in and what comes out.</p>
+    <div class="controls">
+      <button class="pill" id="tourBtn" type="button" aria-pressed="true">Pause tour</button>
+      <span class="hint" id="tourHint">The tour moves to the next step every few seconds. Click any step to stop on it.</span>
+    </div>
+    <div class="flow-scroll">
+      <svg id="flow" viewBox="0 0 1200 492" role="group" aria-label="The six steps of the tool, the services each one uses, and the Google Sheet they write to"></svg>
+    </div>
+
+    <div class="detail" id="detail" aria-live="polite">
+      <div class="detail-head">
+        <h2 id="dTitle"></h2>
+        <p id="dSummary"></p>
+        <div class="uses" id="dUses"></div>
+      </div>
+      <div class="detail-grid">
+        <div class="cell"><h3>You give it</h3><ul id="dIn"></ul></div>
+        <div class="cell"><h3>The tool does</h3><ul id="dDoes"></ul></div>
+        <div class="cell"><h3>You get</h3><ul id="dOut"></ul></div>
+        <div class="cell"><h3>Logged in the sheet</h3><ul id="dTabs"></ul></div>
+      </div>
+    </div>
+  </div>
+
+  <section class="block" id="facts">
+    <div class="wrap">
+      <h2>Checking a fact, step by step</h2>
+      <p class="lead">Facts are the most expensive thing to check, so the tool spends as little as it can on each one. Most facts end up costing nothing.</p>
+      <ol class="steps" id="steps"></ol>
+      <div class="track" aria-hidden="true"><div class="fill" id="fill"></div></div>
+      <div class="steps-controls"><button class="pill" id="replayBtn" type="button">Replay</button></div>
+    </div>
+  </section>
+
+  <section class="block" id="checks">
+    <div class="wrap">
+      <h2>Two kinds of checks</h2>
+      <p class="lead">Some problems can be found with exact rules. The rest need an AI reviewer, whose findings are tested before you see them.</p>
+      <div class="two">
+        <div>
+          <h3>Exact rules</h3>
+          <p class="sub">The same answer every time, at no cost.</p>
+          <ul>
+            <li>The CAGR matches its own start and end values</li>
+            <li>A share matches its value and the market total for that year</li>
+            <li>Every mention of the market size matches the Overview</li>
+            <li>"Majority" is only used for more than 50%</li>
+            <li>No missing space after a full stop, no double spaces, no repeated words</li>
+            <li>Every paragraph ends with a full stop</li>
+            <li>No "MEA" or "the US", and no region or abbreviation written two ways</li>
+          </ul>
+        </div>
+        <div>
+          <h3>AI review</h3>
+          <p class="sub">Reads the text the way an editor would.</p>
+          <ul>
+            <li>Spelling and grammar</li>
+            <li>The same figure given two different values</li>
+            <li>Missing sections, and regions the text never discusses</li>
+            <li>FAQ answers that differ from the description</li>
+            <li>Infographic numbers against the text</li>
+            <li>Report Snapshot and Table of Contents against the text</li>
+          </ul>
+          <div class="guard">
+            <h3>Before an AI finding is shown</h3>
+            <ul>
+              <li>The text it quotes must be on the page</li>
+              <li>Its fix must change something</li>
+              <li>Notes that say there is no conflict, and requests to double-check, are dropped</li>
+              <li>A region or segment figure is never compared with the market total</li>
+              <li>The reviewer gives its most likely answer every time, so a rerun matches</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+      <p class="note">If a finding in the RD tab is not an error, untick its Error box. The decision is saved with your email, and the whole team sees it the next time the report is checked.</p>
+    </div>
+  </section>
+
+  <section class="block" id="data">
+    <div class="wrap">
+      <h2>Where the data lives</h2>
+      <p class="lead">Everything is written to the Google Sheet KR-Process, one tab per kind of record. Sign-in accounts are kept apart from it.</p>
+      <table class="grid">
+        <thead><tr><th>Tab</th><th>What it holds</th><th>Written by</th></tr></thead>
+        <tbody>
+          <tr><td>Opportunities</td><td>Every keyword scan, one row per report topic, with priority and reason</td><td>Keywords</td></tr>
+          <tr><td>Keywords</td><td>Every keyword in the pipeline, with the analyst's verdict and the manager's decision</td><td>Keywords</td></tr>
+          <tr><td>Research List</td><td>Approved reports, approval dates, live status and live dates</td><td>Keywords, Live Tracker</td></tr>
+          <tr><td>RD</td><td>Saved RD checks</td><td>RD</td></tr>
+          <tr><td>Issue Decisions</td><td>Who marked which RD issue as not an error, and when</td><td>RD</td></tr>
+          <tr><td>Fact Cache</td><td>Every checked fact with its verdict and source, reused for 180 days</td><td>RD, Publish Check, Live Tracker</td></tr>
+          <tr><td>Content</td><td>Notes from the content team</td><td>Content</td></tr>
+          <tr><td>DM</td><td>Each page built: images, meta title and description, internal links</td><td>DM</td></tr>
+          <tr><td>Publish Check</td><td>Each preview page check, with every issue found</td><td>Publish Check</td></tr>
+          <tr><td>Live Check</td><td>Each live page check, with every issue found</td><td>Live Tracker</td></tr>
+          <tr><td>Sitemap</td><td>Every report URL in our reports sitemap, with the date it was first seen</td><td>Live Tracker</td></tr>
+          <tr><td class="private">Users</td><td>Sign-in accounts. Passwords are stored only as scrambled hashes. Kept in a private sheet, or in a hidden tab only the accounts owner can edit.</td><td>Sign-in</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="block" id="people">
+    <div class="wrap">
+      <h2>Who can do what</h2>
+      <p class="lead">Everyone signs in with their Kings Research email. A few actions are kept to named people, set in the tool's settings.</p>
+      <div class="roles">
+        <div><h3>Everyone</h3><p>Uses every tab after signing in. The first sign-in uses the starting password, then each person sets their own.</p></div>
+        <div><h3>In-house keyword editors</h3><p>Add hand-picked keywords to the pipeline after seeing their volume, scope and a reason.</p></div>
+        <div><h3>Managers</h3><p>Approve or reject keyword groups, using the manager PIN. Approved reports go to the Research List.</p></div>
+        <div><h3>Accounts owner</h3><p>The only person, besides the tool itself, who can open or change the sign-in accounts.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="block" id="cost">
+    <div class="wrap">
+      <h2>What a report costs</h2>
+      <p class="lead">Estimates at November 2026 prices, for one report checked at the RD, publish and live stages.</p>
+      <table class="grid">
+        <thead><tr><th>Part</th><th>Cost per report</th></tr></thead>
+        <tbody>
+          <tr><td>Exact rules</td><td>Free</td></tr>
+          <tr><td>Facts reused from the Fact Cache</td><td>Free</td></tr>
+          <tr><td>Web search (Tavily)</td><td>Free, up to 1,000 searches a month</td></tr>
+          <tr><td>Jev judgments</td><td>Under 1 cent</td></tr>
+          <tr><td>OpenAI reviews and checks</td><td>About 5 to 10 cents</td></tr>
+          <tr><td>Deep check button</td><td>1 to 3 cents per click, only when someone clicks it</td></tr>
+          <tr><td>Mangools keyword data</td><td>Covered by the Mangools plan</td></tr>
+          <tr class="total"><td>Total</td><td>About 6 to 12 cents</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>Kings Research SEO Workbench</span>
+    <a class="pill" href="/">Back to the tool</a>
+  </div>
+</footer>
+
+<script>
+(function () {
+  'use strict';
+  var reduce = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  var NS = 'http://www.w3.org/2000/svg';
+  var C = { ink: '#232323', slate: '#36476F', sky: '#2DA0E0', royal: '#2B71E2', indigo: '#2D47E0', violet: '#643EC1', green: '#009307' };
+
+  // ---------- content ----------
+  var SERV = {
+    mangools: { name: 'Mangools', x: 120, color: C.sky, desc: 'keyword gaps, search volumes and the Google top 10' },
+    sitemap: { name: 'KR sitemaps', x: 360, color: C.slate, desc: 'our published reports, blogs and press releases' },
+    openai: { name: 'OpenAI', x: 600, color: C.violet, desc: 'written reviews, market reasons and reading images' },
+    jev: { name: 'Jev', x: 840, color: C.indigo, desc: 'quick yes, no and multiple-choice judgments' },
+    tavily: { name: 'Tavily', x: 1080, color: C.royal, desc: 'web search, 1,000 free searches a month' }
+  };
+  var TABS = ['Opportunities', 'Keywords', 'Research List', 'RD', 'Issue Decisions', 'Fact Cache', 'Content', 'DM', 'Publish Check', 'Live Check', 'Sitemap'];
+  var ICONS = {
+    search: '<circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5L21 21"/>',
+    doc: '<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/><path d="M9 12h6M9 15h6M9 18h4"/>',
+    edit: '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/>',
+    link: '<path d="M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1"/><path d="M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1"/>',
+    check: '<path d="M4 12.5l5 5L20 6.5"/><rect x="2.5" y="2.5" width="19" height="19"/>',
+    stats: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>'
+  };
+  var STAGES = [
+    {
+      name: 'Keywords', sub: 'Find and approve topics', x: 100, icon: 'search',
+      services: ['mangools', 'sitemap', 'jev', 'openai'], tabs: ['Opportunities', 'Keywords', 'Research List'],
+      summary: 'Finds report topics that competitors rank for and Kings Research does not, then takes them through analyst checks and manager approval.',
+      give: ['The competitors to compare against', 'In-house keyword ideas, from the editors'],
+      does: ['Pulls the keywords each competitor ranks for and we do not, from Mangools', 'Groups them into report topics and checks our reports sitemap: new report, revamp or similar report', 'Sets a priority from search volume and competitor counts, with Jev judging commercial demand', 'Writes a one-line reason for each market', 'Finds more secondary keywords on the pages ranking in Google\'s top 10'],
+      get: ['A prioritised topic list', 'Analyst verdicts and manager approval', 'The Research List, with approval dates']
+    },
+    {
+      name: 'RD', sub: 'Check the draft', x: 300, icon: 'doc',
+      services: ['openai', 'jev', 'tavily'], tabs: ['RD', 'Issue Decisions', 'Fact Cache'],
+      summary: 'Checks the written report description before it moves on.',
+      give: ['The pasted RD', 'The primary and secondary keywords from the Research List'],
+      does: ['Highlights every use of each keyword, with counts', 'Runs the exact rules: CAGR maths, shares against the total, figures against the Overview, spacing and house style', 'Runs the AI review for grammar, number conflicts and structure, testing each finding against the text', 'Fact-checks dated events and statistics attributed to an organization', 'Shades the text of every problem faint red'],
+      get: ['Issue lists with fixes', 'Source links for claims that have none', 'An Error tick box on every issue']
+    },
+    {
+      name: 'Content', sub: 'Content team', x: 500, icon: 'edit',
+      services: [], tabs: ['Content'],
+      summary: 'Reserved for the content team.',
+      give: ['Notes from the content team'],
+      does: ['Nothing automatic yet'],
+      get: ['A log row for each entry']
+    },
+    {
+      name: 'DM', sub: 'Build the page', x: 700, icon: 'link',
+      services: ['openai', 'sitemap'], tabs: ['DM'],
+      summary: 'Turns the final text into the HTML the CMS needs.',
+      give: ['The final content', 'Image URLs, with optional alt text'],
+      does: ['Adds H2 and H3 tags and builds the segmentation table', 'Places the images, with alt text only inside each image tag', 'Removes caption lines that repeat the alt text', 'Chooses internal links from our report, blog and press sitemaps', 'Suggests a meta title and description'],
+      get: ['Meta title, meta description and HTML ready to paste', 'A preview where the images can be dragged into place']
+    },
+    {
+      name: 'Publish Check', sub: 'Check the preview', x: 900, icon: 'check',
+      services: ['openai', 'jev', 'tavily'], tabs: ['Publish Check', 'Fact Cache'],
+      summary: 'Checks the preview page before it is published.',
+      give: ['The preview URL'],
+      does: ['Reads the page, its FAQs, images and links', 'Runs the data, FAQ, spelling and fact checks', 'Reads the infographic and compares its numbers with the text', 'Checks the meta tags, headings, canonical and every link'],
+      get: ['A pass, review or fix-required status, with every issue']
+    },
+    {
+      name: 'Live Tracker', sub: 'Check the live page', x: 1100, icon: 'stats',
+      services: ['sitemap', 'openai', 'jev', 'tavily'], tabs: ['Sitemap', 'Live Check', 'Research List', 'Fact Cache'],
+      summary: 'Spots approved reports when they go live, and checks the live page.',
+      give: ['A click on "Sync reports sitemap"', 'Or any live URL'],
+      does: ['Syncs our reports sitemap and marks approved reports and revamps as live, with their date', 'Runs every Publish Check test', 'Also checks the Report Snapshot and Table of Contents tabs'],
+      get: ['Live dates on the Research List', 'A live check result for each report']
+    }
+  ];
+  var STEPS = [
+    { t: 'Pick the sentences', p: 'Plain rules keep the sentences with a month and year, or an event word such as launched, acquired or approved.', tag: ['free', 'Free'] },
+    { t: 'Check the Fact Cache', p: 'A sentence checked before already has a saved verdict and source.', tag: ['free', 'Free'], b: 'Seen before: the saved verdict is shown and nothing else runs.' },
+    { t: 'Keep public facts', p: 'Jev labels each sentence as a public fact, our own estimate or a general statement. Only public facts go on.', tag: ['cheap', 'Under 1 cent'] },
+    { t: 'Search the web', p: 'One Tavily search per fact. Report sellers and their press releases are never used as sources.', tag: ['free', 'Free'], b: 'No search available: the page the sentence already links to is read instead.' },
+    { t: 'Judge the results', p: 'Jev reads each result and says whether it confirms the fact, conflicts with it or is unrelated, with a confidence score.', tag: ['cheap', 'Under 1 cent'] },
+    { t: 'Verdict and source', p: 'Supported, Contradicted, Unverifiable or Check manually, with the source link. The verdict is saved to the Fact Cache.', tag: ['free', 'Free'], b: 'Not sure? The Deep check button runs OpenAI web search on that one claim, for 1 to 3 cents.' }
+  ];
+
+  // ---------- the flow diagram ----------
+  var svg = document.getElementById('flow');
+  function el(name, attrs, parent) {
+    var e = document.createElementNS(NS, name);
+    if (attrs) Object.keys(attrs).forEach(function (k) { e.setAttribute(k, attrs[k]); });
+    if (parent) parent.appendChild(e);
+    return e;
+  }
+  var Y = { svcTop: 20, svcBot: 56, boxTop: 170, boxBot: 262, mid: 216, sheetTop: 392 };
+
+  var defs = el('defs', null, svg);
+  var grad = el('linearGradient', { id: 'pipeGrad', x1: '0', x2: '1', y1: '0', y2: '0' }, defs);
+  el('stop', { offset: '0%', 'stop-color': C.sky }, grad);
+  el('stop', { offset: '55%', 'stop-color': C.royal }, grad);
+  el('stop', { offset: '100%', 'stop-color': C.indigo }, grad);
+
+  // Layers, back to front. Moving dots sit under the step boxes, so they appear to pass through them.
+  var gLines = el('g', null, svg);
+  var gWrites = el('g', null, svg);
+  var gPipe = el('g', null, svg);
+  var gActive = el('g', { 'aria-hidden': 'true' }, svg);
+  var gFlow = el('g', { 'aria-hidden': 'true' }, svg);
+  var gNodes = el('g', null, svg);
+  var gSvc = el('g', null, svg);
+  var gSheet = el('g', null, svg);
+
+  function svcPath(sid, st) {
+    var sx = SERV[sid].x;
+    return 'M' + sx + ' ' + Y.svcBot + ' C' + sx + ' 115 ' + st.x + ' 115 ' + st.x + ' ' + Y.boxTop;
+  }
+  function writePath(st) { return 'M' + st.x + ' ' + Y.boxBot + ' L' + st.x + ' ' + Y.sheetTop; }
+
+  // A dot that travels along a path for ever. A negative start time spaces dots out along the same path.
+  function dot(parent, d, color, dur, begin, r) {
+    var c = el('circle', { r: r || 4, fill: color, cx: 0, cy: 0 }, parent);
+    el('animateMotion', { dur: dur + 's', repeatCount: 'indefinite', path: d, begin: begin + 's' }, c);
+    return c;
+  }
+
+  var lineEls = [];
+  STAGES.forEach(function (st, i) {
+    st.services.forEach(function (sid) {
+      lineEls.push({ i: i, sid: sid, path: el('path', { d: svcPath(sid, st), class: 'sline' }, gLines) });
+    });
+    st.write = el('path', { d: writePath(st), class: 'wline' }, gWrites);
+  });
+
+  el('path', { d: 'M25 ' + Y.mid + ' H1175', class: 'pipe' }, gPipe);
+  for (var k = 0; k < STAGES.length - 1; k++) {
+    var gx = STAGES[k].x + 100;
+    el('path', { d: 'M' + (gx - 5) + ' ' + (Y.mid - 6) + ' L' + (gx + 1) + ' ' + Y.mid + ' L' + (gx - 5) + ' ' + (Y.mid + 6), class: 'chev' }, gPipe);
+  }
+  if (!reduce) {
+    for (var t = 0; t < 3; t++) dot(gFlow, 'M25 ' + Y.mid + ' H1175', C.royal, 9, -t * 3, 5);
+  }
+
+  STAGES.forEach(function (st, i) {
+    var g = el('g', { class: 'stage', tabindex: '0', role: 'button', 'aria-pressed': 'false', 'aria-label': st.name + ': ' + st.sub }, gNodes);
+    el('rect', { class: 'box', x: st.x - 75, y: Y.boxTop, width: 150, height: 92 }, g);
+    var ico = el('g', { class: 'ico', transform: 'translate(' + (st.x - 12) + ' 180)' }, g);
+    ico.innerHTML = ICONS[st.icon];
+    var n = el('text', { class: 'name', x: st.x, y: 228, 'text-anchor': 'middle' }, g);
+    n.textContent = st.name;
+    var s = el('text', { class: 'sub', x: st.x, y: 248, 'text-anchor': 'middle' }, g);
+    s.textContent = st.sub;
+    g.addEventListener('click', function () { select(i, true); });
+    g.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); select(i, true); }
+      if (e.key === 'ArrowRight') { e.preventDefault(); STAGES[(i + 1) % STAGES.length].g.focus(); }
+      if (e.key === 'ArrowLeft') { e.preventDefault(); STAGES[(i + STAGES.length - 1) % STAGES.length].g.focus(); }
+    });
+    st.g = g;
+  });
+
+  Object.keys(SERV).forEach(function (sid) {
+    var sv = SERV[sid];
+    var g = el('g', { class: 'svc' }, gSvc);
+    var tip = el('title', null, g);
+    tip.textContent = sv.name + ': ' + sv.desc;
+    sv.rect = el('rect', { class: 'pillbox', x: sv.x - 80, y: Y.svcTop, width: 160, height: 36, rx: 18 }, g);
+    var tx = el('text', { x: sv.x, y: Y.svcTop + 23, 'text-anchor': 'middle' }, g);
+    tx.textContent = sv.name;
+    sv.g = g;
+  });
+
+  el('rect', { class: 'frame', x: 25, y: Y.sheetTop, width: 1150, height: 86 }, gSheet);
+  var st1 = el('text', { class: 'title', x: 45, y: Y.sheetTop + 25 }, gSheet);
+  st1.textContent = 'Google Sheet: KR-Process';
+  var st2 = el('text', { class: 'note', x: 1155, y: Y.sheetTop + 25, 'text-anchor': 'end' }, gSheet);
+  st2.textContent = 'Every step logs what it found here';
+  var chips = {};
+  var cx = 45;
+  TABS.forEach(function (name) {
+    var w = Math.round(name.length * 6.6 + 18);
+    var g = el('g', { class: 'tabchip' }, gSheet);
+    el('rect', { x: cx, y: Y.sheetTop + 40, width: w, height: 26 }, g);
+    var tt = el('text', { x: cx + w / 2, y: Y.sheetTop + 57, 'text-anchor': 'middle' }, g);
+    tt.textContent = name;
+    chips[name] = g;
+    cx += w + 8;
+  });
+
+  // ---------- the detail panel ----------
+  function fillList(id, items) {
+    var ul = document.getElementById(id);
+    while (ul.firstChild) ul.removeChild(ul.firstChild);
+    items.forEach(function (text) {
+      var li = document.createElement('li');
+      li.textContent = text;
+      ul.appendChild(li);
+    });
+  }
+  function renderDetail(st) {
+    document.getElementById('dTitle').textContent = st.name;
+    document.getElementById('dSummary').textContent = st.summary;
+    var uses = document.getElementById('dUses');
+    while (uses.firstChild) uses.removeChild(uses.firstChild);
+    if (!st.services.length) {
+      uses.textContent = 'Uses no outside services.';
+    } else {
+      st.services.forEach(function (sid) {
+        var c = document.createElement('span');
+        c.className = 'chip';
+        c.style.borderLeftColor = SERV[sid].color;
+        c.textContent = SERV[sid].name + ': ' + SERV[sid].desc;
+        uses.appendChild(c);
+      });
+    }
+    fillList('dIn', st.give);
+    fillList('dDoes', st.does);
+    fillList('dOut', st.get);
+    fillList('dTabs', st.tabs);
+    var panel = document.getElementById('detail');
+    panel.classList.remove('swap');
+    void panel.offsetWidth;
+    panel.classList.add('swap');
+  }
+
+  // ---------- choosing a step ----------
+  var current = -1;
+  function select(i, byUser) {
+    if (byUser) stopTour();
+    current = i;
+    var st = STAGES[i];
+    STAGES.forEach(function (s, k) {
+      s.g.classList.toggle('on', k === i);
+      s.g.setAttribute('aria-pressed', k === i ? 'true' : 'false');
+      s.write.classList.toggle('on', k === i);
+    });
+    lineEls.forEach(function (l) {
+      var on = l.i === i;
+      l.path.classList.toggle('on', on);
+      l.path.style.stroke = on ? SERV[l.sid].color : '';
+    });
+    Object.keys(SERV).forEach(function (sid) {
+      var on = st.services.indexOf(sid) >= 0;
+      SERV[sid].g.classList.toggle('on', on);
+      SERV[sid].g.classList.toggle('dim', !on);
+      SERV[sid].rect.style.stroke = on ? SERV[sid].color : '';
+    });
+    Object.keys(chips).forEach(function (name) { chips[name].classList.toggle('on', st.tabs.indexOf(name) >= 0); });
+    while (gActive.firstChild) gActive.removeChild(gActive.firstChild);
+    if (!reduce) {
+      st.services.forEach(function (sid, j) {
+        var d = svcPath(sid, st);
+        dot(gActive, d, SERV[sid].color, 1.8, -(j * 0.3), 4);
+        dot(gActive, d, SERV[sid].color, 1.8, -(j * 0.3 + 0.9), 4);
+      });
+      dot(gActive, writePath(st), C.green, 1.4, 0, 4);
+      dot(gActive, writePath(st), C.green, 1.4, -0.7, 4);
+    }
+    renderDetail(st);
+  }
+
+  // ---------- the tour ----------
+  var timer = null;
+  var tourBtn = document.getElementById('tourBtn');
+  function startTour() {
+    if (reduce) return;
+    stopTour();
+    timer = setInterval(function () { select((current + 1) % STAGES.length, false); }, 4500);
+    tourBtn.textContent = 'Pause tour';
+    tourBtn.setAttribute('aria-pressed', 'true');
+  }
+  function stopTour() {
+    if (timer) { clearInterval(timer); timer = null; }
+    tourBtn.textContent = 'Play tour';
+    tourBtn.setAttribute('aria-pressed', 'false');
+  }
+  tourBtn.addEventListener('click', function () {
+    if (timer) stopTour();
+    else { select((current + 1) % STAGES.length, false); startTour(); }
+  });
+
+  select(0, false);
+  if (reduce) {
+    tourBtn.hidden = true;
+    document.getElementById('tourHint').textContent = 'Click any step to see what goes in and what comes out.';
+  } else {
+    startTour();
+  }
+
+  // ---------- the fact-check steps ----------
+  var list = document.getElementById('steps');
+  var fill = document.getElementById('fill');
+  var items = STEPS.map(function (s, i) {
+    var li = document.createElement('li');
+    li.tabIndex = 0;
+    var num = document.createElement('span');
+    num.className = 'num';
+    num.textContent = String(i + 1);
+    var h = document.createElement('h3');
+    h.textContent = s.t;
+    var p = document.createElement('p');
+    p.textContent = s.p;
+    var tag = document.createElement('span');
+    tag.className = 'tag ' + s.tag[0];
+    tag.textContent = s.tag[1];
+    li.appendChild(num);
+    li.appendChild(h);
+    li.appendChild(p);
+    li.appendChild(tag);
+    if (s.b) {
+      var b = document.createElement('p');
+      b.className = 'branch';
+      b.textContent = s.b;
+      li.appendChild(b);
+    }
+    li.addEventListener('click', function () { stopSteps(); setStep(i); });
+    li.addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); stopSteps(); setStep(i); } });
+    list.appendChild(li);
+    return li;
+  });
+  var sIdx = -1;
+  var sTimer = null;
+  function setStep(k) {
+    sIdx = k;
+    items.forEach(function (li, j) {
+      li.classList.toggle('on', j === k);
+      li.classList.toggle('done', j < k);
+    });
+    fill.style.width = ((k + 1) / items.length * 100) + '%';
+  }
+  function stopSteps() { if (sTimer) { clearInterval(sTimer); sTimer = null; } }
+  // Plays through the six steps once and stops on the last one.
+  function playSteps() {
+    stopSteps();
+    if (reduce) { setStep(items.length - 1); return; }
+    setStep(0);
+    sTimer = setInterval(function () {
+      if (sIdx >= items.length - 1) { stopSteps(); return; }
+      setStep(sIdx + 1);
+    }, 1500);
+  }
+  document.getElementById('replayBtn').addEventListener('click', playSteps);
+  if ('IntersectionObserver' in window) {
+    var seen = false;
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (en) {
+        if (en.isIntersecting && !seen) { seen = true; playSteps(); io.disconnect(); }
+      });
+    }, { threshold: 0.4 });
+    io.observe(list);
+  } else {
+    playSteps();
+  }
+})();
+</script>
+</body>
+</html>

@@ -1,7 +1,9 @@
 'use strict';
 /* Shared check UI: issue lists, the fact-check pipeline (earlier verdicts are reused, new ones are checked,
    and a "Deep check" button re-checks one claim with OpenAI web search), and the page-check runner used by
-   Publish Check (preview pages: no Report Snapshot / Table of Contents) and Live Tracker (live pages: everything). */
+   Publish Check (preview pages: no Report Snapshot / Table of Contents) and Live Tracker (live pages: everything).
+   Publish and Live checks also check the report's primary and must-use keywords from the Research List
+   (shown and saved under "Meta & SEO"). */
 (function () {
   const KR = window.KR;
   const { esc } = KR;
@@ -67,7 +69,7 @@
     const c = await KR.api('rd', 'claims', { content, links: hrefs, max: 12 });
     const claims = c.claims || [];
     const info = c.info || {};
-    if (!claims.length) return { status: 'OK', issues: [], claims: [], suggestions: [], searched: false, webUsed: !!useWeb, info, reused: 0 };
+    if (!claims.length) return { status: 'OK', issues: [], claims: [], suggestions: [], searched: false, webUsed: !!useWeb, info, reused: 0, reportName: reportName || '' };
     const verified = {};
     claims.forEach((cl) => {
       if (cl.cached) verified[cl.id] = Object.assign({ id: cl.id, fromCache: true, searched: true, reachable: null }, cl.cached);
@@ -97,7 +99,7 @@
       delete m.cached;
       return m;
     });
-    return KR.factIssues({ claims: merged, searched, searchError, webUsed: !!useWeb, info, reused });
+    return KR.factIssues({ claims: merged, searched, searchError, webUsed: !!useWeb, info, reused, reportName: reportName || '' });
   };
 
   function reachTag(r) {
@@ -180,7 +182,7 @@
     if (!c) { KR.toast('This result is no longer on the page. Run the check again.', 'err'); return; }
     KR.busy(btn, true, 'Checking…');
     try {
-      const r = await KR.api('rd', 'verify', { engine: 'deep', claims: [slim(c)] });
+      const r = await KR.api('rd', 'verify', { engine: 'deep', claims: [slim(c)], reportName: facts.reportName || '' });
       const v = (r.results || [])[0];
       if (!v) throw new Error('No result came back.');
       delete c.lite;
@@ -195,14 +197,71 @@
     }
   }
 
+  // ---------- report keywords on the page (Publish / Live) ----------
+  // The report is found in the Research List by its URL, or else by its name (the H1). Its primary keyword and
+  // every must-use keyword must appear on the page; a missing one is an error.
+  function urlKey(u) {
+    return String(u || '').toLowerCase().replace(/^https?:\/\/(www\.)?/, '').replace(/[?#].*$/, '').replace(/\/(preview\/)?(report|snapshot|toc)\//, '/').replace(/\/+$/, '');
+  }
+  function nameKey(s) {
+    return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').replace(/\b(market|markets|industry)\b/g, ' ').replace(/\s+/g, ' ').trim();
+  }
+  function reEscape(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+  // Case-insensitive, flexible spaces/hyphens, "and" = "&", singular/plural of the last word (as in the RD tab).
+  function kwRe(kw) {
+    const words = String(kw || '').toLowerCase().replace(/\s+/g, ' ').trim().split(' ').filter(Boolean);
+    if (!words.length) return null;
+    const pat = words.map((w, i) => {
+      if (w === 'and' || w === '&') return '(?:and|&)';
+      if (i === words.length - 1) {
+        const base = /s$/.test(w) && w.length > 3 ? w.slice(0, -1) : w;
+        return reEscape(base) + '(?:s|es)?';
+      }
+      return reEscape(w);
+    }).join('[\\s\\u00a0-]+');
+    return new RegExp('(?<![A-Za-z0-9])' + pat + '(?![A-Za-z0-9])', 'i');
+  }
+
+  async function keywordCheck(page, opts, results, prog) {
+    const st = prog.step('Checking the report keywords from the Research List…');
+    let rows = [];
+    try {
+      rows = await KR.loadResearch();
+    } catch (e) {
+      st.fail('Report keywords not checked: the Research List could not be read (' + e.message + ').');
+      return;
+    }
+    const keys = [urlKey(page.finalUrl), urlKey(opts.url)].filter(Boolean);
+    const nk = nameKey(page.h1);
+    const hit = rows.find((r) => [r.liveUrl, r.existingUrl].some((u) => u && keys.indexOf(urlKey(u)) >= 0)) ||
+      (nk ? rows.find((r) => nameKey(r.reportName) === nk || nameKey(r.primary) === nk) : null);
+    if (!hit) { st.done('Report keywords: this page is not in the Research List, so there are no keywords to check.'); return; }
+    const text = [page.h1, page.meta && page.meta.title, page.descriptionText].concat((page.faqs || []).map((f) => f.q + ' ' + f.a)).join('\n');
+    const must = String(hit.mustUse || '').split(/\s*,\s*/).map((s) => s.trim()).filter(Boolean);
+    const missing = (kw) => { const re = kwRe(kw); return !!re && !re.test(text); };
+    const issues = [];
+    if (hit.primary && missing(hit.primary)) {
+      issues.push({ severity: 'error', section: 'Keywords', quote: '', problem: 'The primary keyword "' + hit.primary + '" is not on the page.', fix: 'Use it in the H1, the Overview heading and the first paragraph.' });
+    }
+    must.forEach((kw) => {
+      if (missing(kw)) issues.push({ severity: 'error', section: 'Keywords', quote: '', problem: 'Must-use keyword "' + kw + '" is not on the page.', fix: 'Add "' + kw + '" naturally to the description.' });
+    });
+    const target = results.meta || (results.meta = { status: 'OK', issues: [] });
+    target.issues = (target.issues || []).concat(issues);
+    if (issues.length && target.status !== 'Error') target.status = 'Issues';
+    target.keywords = { report: hit.reportName, primary: hit.primary, mustUse: must };
+    st.done('Report keywords ("' + hit.reportName + '"): ' + (issues.length ? issues.length + ' missing' : 'primary and ' + must.length + ' must-use keyword(s) all on the page') + (must.length ? '' : ' · no must-use keywords recorded for this report'));
+  }
+
   // ---------- page check (Publish / Live) ----------
   const CHECKS = [
     ['data', 'Data consistency'], ['facts', 'Facts'], ['faq', 'FAQs'], ['image', 'Image'], ['language', 'Spelling & grammar'],
-    ['meta', 'Meta & SEO'], ['links', 'Links'], ['snapshot', 'Report Snapshot'], ['toc', 'Table of Contents']
+    ['meta', 'Meta, SEO & keywords'], ['links', 'Links'], ['snapshot', 'Report Snapshot'], ['toc', 'Table of Contents']
   ];
   const LIVE_ONLY = ['snapshot', 'toc'];
 
   KR.runPageCheck = async (opts) => {
+    if (KR.me && KR.me.checker === false) throw new Error('Checks are run by the check team only. Open "Check results" to read their findings.');
     const prog = KR.progress(opts.progEl);
     const out = KR.$(opts.resultsEl);
     out.innerHTML = '';
@@ -234,11 +293,12 @@
       }
     });
     await KR.runLimited(tasks, 4);
+    await keywordCheck(page, opts, results, prog);
     KR.renderCheckResults(out, page, results, opts.mode);
     const sv = prog.step('Saving to the Google Sheet…');
     try {
       const r = await KR.api('pagecheck', 'save', { mode: opts.mode, url: page.finalUrl || opts.url, requestedUrl: opts.url, reportName: page.h1, user: KR.userName(), results });
-      sv.done('Saved to the "' + r.sheet + '" sheet · ' + r.status);
+      sv.done('Saved to the "' + r.sheet + '" sheet · ' + r.status + ' · visible to everyone in "Check results"');
     } catch (e) {
       sv.fail('Not saved to the sheet: ' + e.message);
     }
@@ -271,8 +331,12 @@
       }
       const cs = KR.countSev(r.issues);
       const badge = r.error ? '<span class="tag bad">error</span>' : (r.issues && r.issues.length ? '<span class="tag' + (cs.error ? ' bad' : '') + '">' + r.issues.length + ' issue(s)</span>' : '<span class="tag ok">OK</span>');
-      let body = r.error ? '<p class="err">' + esc(r.error) + '</p>' : KR.issuesHtml(r.issues);
+      let body = r.error ? '<p class="err">' + esc(r.error) + '</p>' + (r.issues && r.issues.length ? KR.issuesHtml(r.issues) : '') : KR.issuesHtml(r.issues);
       if (p[0] === 'facts' && !r.error) body = KR.factsBlock(r);
+      if (p[0] === 'meta' && r.keywords) {
+        body = '<p class="hint">Keywords checked against the Research List entry "' + esc(r.keywords.report) + '": primary "' + esc(r.keywords.primary) + '"' +
+          (r.keywords.mustUse.length ? ' and must-use ' + r.keywords.mustUse.map((k) => '"' + esc(k) + '"').join(', ') : ' (no must-use keywords recorded)') + '.</p>' + body;
+      }
       if (p[0] === 'image' && r.images && r.images.length) body += r.images.map((im) => '<h3>Text read from the image</h3><p class="small"><a href="' + esc(im.src) + '" target="_blank" rel="noopener">' + esc(im.src) + '</a> · alt: "' + esc(im.alt) + '"</p><div class="quote">' + esc(im.text) + '</div>').join('');
       html += '<details class="cat"' + (cs.error || r.error ? ' open' : '') + '><summary><span class="grow">' + esc(p[1]) + '</span>' + badge + '</summary><div class="cat-body">' + body + '</div></details>';
     });

@@ -1,7 +1,7 @@
 'use strict';
 /* Sign-in. Loaded by main.js before the app starts. Shows the sign-in screen, makes a first-time user set their
-   own password, adds "Change password" and "Sign out" beside the name box, and sends the session with every
-   request to the server. The session lasts until the browser tab is closed (12 hours at most). */
+   own password, adds "How it works", "Change password" and "Sign out" beside the name box, and sends the session
+   with every request to the server. The session lasts until the browser tab is closed (12 hours at most). */
 (function () {
   const KR = window.KR;
   const KEY = 'kr_session';
@@ -72,7 +72,8 @@
         '<label style="' + LABEL + '">Email<input name="email" type="email" autocomplete="username" required style="' + INPUT + '"></label>' +
         '<label style="' + LABEL + '">Password<input name="password" type="password" autocomplete="current-password" required style="' + INPUT + '"></label>' +
         '<button type="submit" style="' + BTN + '">Sign in</button>' + MSG +
-        '<p style="margin:8px 0 0;font-size:12px;color:#36476F">First time here? Use the starting password from your manager. You will then set your own.</p></form>';
+        '<p style="margin:8px 0 0;font-size:12px;color:#36476F">First time here? Use the starting password from your manager. You will then set your own.</p>' +
+        '<p style="margin:8px 0 0;font-size:12px"><a href="how-it-works.html" target="_blank" rel="noopener" style="color:#2B71E2">How the tool works</a></p></form>';
       const form = o.querySelector('form');
       const msg = o.querySelector('[data-msg]');
       const btn = o.querySelector('button');
@@ -151,14 +152,15 @@
     return session.email;
   };
 
-  // "Change password" and "Sign out" beside the name box at the top right.
+  // "How it works", "Change password" and "Sign out" beside the name box at the top right.
   KR.initAccountBar = () => {
     const name = KR.$('#userName');
     if (!name || document.getElementById('krAccount')) return;
     const bar = document.createElement('span');
     bar.id = 'krAccount';
     bar.setAttribute('style', 'display:inline-flex;gap:6px;margin-left:8px;vertical-align:middle');
-    bar.innerHTML = '<button type="button" class="btn tiny ghost" data-acc="pw">Change password</button><button type="button" class="btn tiny ghost" data-acc="out">Sign out</button>';
+    bar.innerHTML = '<a class="btn tiny ghost" href="how-it-works.html" target="_blank" rel="noopener">How it works</a>' +
+      '<button type="button" class="btn tiny ghost" data-acc="pw">Change password</button><button type="button" class="btn tiny ghost" data-acc="out">Sign out</button>';
     name.insertAdjacentElement('afterend', bar);
     bar.addEventListener('click', (e) => {
       const b = e.target.closest('[data-acc]');
